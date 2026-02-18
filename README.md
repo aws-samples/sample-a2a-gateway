@@ -45,39 +45,7 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────┐
-│         A2A Clients                     │
-│  (Standard A2A SDK or HTTP client)      │
-└────────────┬────────────────────────────┘
-             │ HTTPS + JWT Bearer
-             │
-┌────────────▼────────────────────────────┐
-│    API Gateway (REST API)               │
-│    + Lambda Authorizer                  │
-│                                         │
-│  GET  /agents          → Registry λ     │
-│  ANY  /agents/{proxy+} → Proxy λ        │
-│  POST /admin/*         → Admin λ        │
-└────────────┬────────────────────────────┘
-             │
-      ┌──────┴──────┬──────────────┐
-      │             │              │
-┌─────▼─────┐ ┌────▼──────┐ ┌────▼──────┐
-│ Registry  │ │  Proxy    │ │  Admin    │
-│  Lambda   │ │  Lambda   │ │  Lambda   │
-└─────┬─────┘ └────┬──────┘ └────┬──────┘
-      │            │              │
-      └────┬───────┴──────────────┘
-           │
-┌──────────▼──────────────────────────────┐
-│         DynamoDB + Secrets Manager      │
-└──────────┬──────────────────────────────┘
-           │
-┌──────────▼──────────────────────────────┐
-│      Backend A2A Servers                │
-└─────────────────────────────────────────┘
-```
+![A2A Gateway Architecture](diagrams/architecture.png)
 
 ### Components
 
