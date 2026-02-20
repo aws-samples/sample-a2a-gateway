@@ -52,12 +52,12 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 **API Gateway (REST API)**
 - Two static routes that never change when agents are added/removed
 - Lambda authorizer for JWT validation and FGAC
-- Response streaming enabled for SSE support
+- Response streaming enabled via Lambda Web Adapter
 
 **Lambda Functions**
 - **Authorizer**: JWT validation, extracts user context (scopes, roles)
 - **Registry**: Agent discovery with permission filtering
-- **Proxy**: Routes A2A requests to backends with OAuth authentication
+- **Proxy** (Container): Routes A2A requests to backends with OAuth authentication, supports real-time SSE streaming via FastAPI + Lambda Web Adapter
 - **Admin**: Agent registration and management
 
 **DynamoDB Tables**
@@ -110,6 +110,7 @@ This means standard A2A clients can seamlessly interact with Bedrock AgentCore a
 - Terraform >= 1.5.0
 - Python 3.12
 - AWS CLI configured
+- Finch (container runtime) - [Install Finch](https://github.com/runfinch/finch)
 - S3 bucket for Terraform state
 
 ### 1. Configure Terraform Backend (for remote tfstate)
@@ -141,9 +142,18 @@ project_name = "a2a-gateway"
 environment  = "poc"
 ```
 
-### 3. Deploy (Single Step!)
+### 3. Build Lambda Package
+
+Build the zip package for non-container Lambdas (Authorizer, Registry, Admin):
 
 ```bash
+./scripts/build_lambda_package.sh
+```
+
+### 4. Deploy
+
+```bash
+cd terraform
 terraform init
 terraform plan  # Review what will be created
 terraform apply
@@ -152,13 +162,17 @@ terraform apply
 This creates everything in one go:
 - DynamoDB tables (AgentRegistry, Permissions)
 - Cognito User Pool
-- 4 Lambda functions (Authorizer, Registry, Proxy, Admin)
-- API Gateway with Lambda Authorizer
+- ECR repository for the proxy container
+- Builds and pushes the proxy container image (requires Finch)
+- 4 Lambda functions (Authorizer, Registry, Proxy container, Admin)
+- API Gateway with Lambda Authorizer and response streaming
 - IAM roles and policies
 - Secrets Manager setup
 - Automatically updates Lambda env vars with the API Gateway URL
 
-### 4. (Optional) Seed Example Permissions
+**Note**: The proxy Lambda is container-based to support response streaming. Terraform automatically builds and pushes the container image to ECR during deployment.
+
+### 5. (Optional) Seed Example Permissions
 
 ```bash
 cd ..
@@ -408,7 +422,7 @@ This gateway implements core A2A messaging operations. Below is the full complia
 | **Agent Discovery** | `GET /agents` | ✅ Supported | Registry with permission filtering |
 | **Get Agent Card** | `GET /agents/{id}/.well-known/agent-card.json` | ✅ Supported | Cached with URL rewriting |
 | **Send Message** | `POST /agents/{id}/message:send` | ✅ Supported | Buffered response |
-| **Stream Message** | `POST /agents/{id}/message:stream` | ⚠️ Buffered | SSE supported but buffered, not real-time |
+| **Stream Message** | `POST /agents/{id}/message:stream` | ✅ Supported | Real-time SSE streaming |
 | **Get Task** | `GET /tasks/{id}` | ❌ Not Implemented | |
 | **List Tasks** | `GET /tasks` | ❌ Not Implemented | |
 | **Cancel Task** | `POST /tasks/{id}:cancel` | ❌ Not Implemented | |
@@ -418,9 +432,9 @@ This gateway implements core A2A messaging operations. Below is the full complia
 
 ### Known Limitations
 
-**Streaming Response Buffering**: The `message:stream` endpoint buffers the complete SSE stream from backends before returning all events at once. True streaming requires Lambda response streaming with `streamifyResponse` wrapper. For production real-time streaming, consider WebSocket API or EC2/ECS proxying.
-
 **Task Management**: Task lifecycle operations (get, list, cancel, subscribe) are not implemented. The gateway focuses on stateless message proxying rather than task state management.
+
+**Integration Timeout**: API Gateway REST API has a default 29-second integration timeout. For long-running operations, you can request a quota increase from AWS to extend this up to 15 minutes.
 
 ## Troubleshooting
 
@@ -447,12 +461,13 @@ aws dynamodb get-item \
   /modules
     /dynamodb       - Tables
     /cognito        - Auth
+    /ecr            - Container registry for proxy Lambda
     /lambda-functions - All Lambdas
-    /api-gateway    - REST API
+    /api-gateway    - REST API with streaming support
 /src/lambdas
   /authorizer       - JWT validation
   /registry         - Agent discovery
-  /proxy            - A2A routing (THE CRITICAL ONE)
+  /proxy_container  - A2A routing with streaming (FastAPI + Lambda Web Adapter)
   /admin            - Agent management
   /shared           - Common utilities
 /tests

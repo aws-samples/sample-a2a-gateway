@@ -72,3 +72,14 @@ output "api_gateway_id" {
   description = "ID of the API Gateway"
   value       = module.api_gateway.api_id
 }
+
+# ECR Outputs
+output "proxy_ecr_repository_url" {
+  description = "URL of the Proxy Lambda ECR repository"
+  value       = module.ecr.proxy_repository_url
+}
+
+output "proxy_ecr_repository_name" {
+  description = "Name of the Proxy Lambda ECR repository"
+  value       = module.ecr.proxy_repository_name
+}

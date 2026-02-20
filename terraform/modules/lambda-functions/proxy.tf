@@ -1,4 +1,4 @@
-# Proxy Lambda Function
+# Proxy Lambda Function (Container-based with streaming support)
 
 # IAM Role for Proxy Lambda
 resource "aws_iam_role" "proxy" {
@@ -58,16 +58,14 @@ resource "aws_iam_role_policy" "proxy_permissions" {
   })
 }
 
-# Lambda Function
+# Lambda Function (Container Image)
 resource "aws_lambda_function" "proxy" {
-  filename         = "${path.module}/builds/lambda.zip"
-  function_name    = "${var.project_name}-${var.environment}-proxy"
-  role            = aws_iam_role.proxy.arn
-  handler         = "proxy.handler.lambda_handler"
-  source_code_hash = filebase64sha256("${path.module}/builds/lambda.zip")
-  runtime         = "python3.12"
-  timeout         = 900  # 15 minutes for streaming support
-  memory_size     = 1024
+  function_name = "${var.project_name}-${var.environment}-proxy"
+  role          = aws_iam_role.proxy.arn
+  package_type  = "Image"
+  image_uri     = "${var.proxy_ecr_repository_url}:latest"
+  timeout       = 900  # 15 minutes for streaming support
+  memory_size   = 1024
 
   environment {
     variables = {
@@ -78,9 +76,9 @@ resource "aws_lambda_function" "proxy" {
     }
   }
 
-  # Ignore changes to environment variables since they're updated by null_resource
+  # Ignore changes to image_uri since it's updated by CI/CD
   lifecycle {
-    ignore_changes = [environment]
+    ignore_changes = [image_uri, environment]
   }
 
   tags = {

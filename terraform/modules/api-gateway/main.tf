@@ -135,7 +135,7 @@ resource "aws_api_gateway_integration" "agents_get" {
   uri                     = var.registry_lambda_invoke_arn
 }
 
-# ANY /agents/{proxy+} - Proxy Lambda
+# ANY /agents/{proxy+} - Proxy Lambda (with streaming support)
 resource "aws_api_gateway_method" "agents_proxy_any" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.agents_proxy.id
@@ -148,14 +148,93 @@ resource "aws_api_gateway_method" "agents_proxy_any" {
   }
 }
 
+# IAM role for API Gateway to invoke proxy Lambda with streaming
+resource "aws_iam_role" "proxy_invocation" {
+  name = "${var.project_name}-${var.environment}-apigw-proxy-invocation"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "apigateway.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "proxy_invocation" {
+  name = "lambda-invoke-streaming"
+  role = aws_iam_role.proxy_invocation.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:InvokeFunctionWithResponseStream"
+        ]
+        Resource = var.proxy_lambda_arn
+      }
+    ]
+  })
+}
+
+# Streaming integration for proxy Lambda
+# Note: We create with standard URI first, then update to streaming via CLI
+# because Terraform doesn't support response_transfer_mode yet
 resource "aws_api_gateway_integration" "agents_proxy_any" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.agents_proxy.id
   http_method             = aws_api_gateway_method.agents_proxy_any.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = var.proxy_lambda_invoke_arn
+  
+  # Start with standard invocation URI (will be updated by null_resource)
+  uri = var.proxy_lambda_invoke_arn
+  
+  # IAM credentials required for streaming invocation
+  credentials = aws_iam_role.proxy_invocation.arn
+  
+  # Timeout
+  timeout_milliseconds = 29000
+
+  lifecycle {
+    ignore_changes = [uri]  # URI will be updated by null_resource for streaming
+  }
 }
+
+# Update integration to use streaming mode via AWS CLI
+# This sets both the streaming URI and response_transfer_mode
+resource "null_resource" "set_streaming_mode" {
+  triggers = {
+    integration_id = aws_api_gateway_integration.agents_proxy_any.id
+    proxy_arn      = var.proxy_lambda_arn
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Update to streaming mode and streaming URI
+      aws apigateway update-integration \
+        --rest-api-id ${aws_api_gateway_rest_api.main.id} \
+        --resource-id ${aws_api_gateway_resource.agents_proxy.id} \
+        --http-method ANY \
+        --patch-operations \
+          "op=replace,path=/uri,value=arn:aws:apigateway:${data.aws_region.current.name}:lambda:path/2021-11-15/functions/${var.proxy_lambda_arn}/response-streaming-invocations" \
+          "op=replace,path=/responseTransferMode,value=STREAM" \
+        --region ${data.aws_region.current.name}
+    EOT
+  }
+
+  depends_on = [aws_api_gateway_integration.agents_proxy_any]
+}
+
+data "aws_region" "current" {}
 
 # POST /admin/agents/register - Admin Lambda
 resource "aws_api_gateway_method" "admin_register" {
@@ -251,6 +330,7 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_method.admin_register.id,
       aws_api_gateway_method.admin_sync.id,
       aws_api_gateway_method.admin_status.id,
+      null_resource.set_streaming_mode.id,  # Redeploy when streaming mode changes
     ]))
   }
 
@@ -264,6 +344,7 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.admin_register,
     aws_api_gateway_integration.admin_sync,
     aws_api_gateway_integration.admin_status,
+    null_resource.set_streaming_mode,  # Deploy after streaming mode is set
   ]
 }
 

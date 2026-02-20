@@ -15,6 +15,52 @@ module "cognito" {
   environment    = var.environment
 }
 
+# ECR Repository for Proxy Lambda container
+module "ecr" {
+  source = "./modules/ecr"
+
+  project_name = var.project_name
+  environment  = var.environment
+}
+
+# Build and push proxy container image
+resource "null_resource" "build_proxy_container" {
+  triggers = {
+    # Rebuild when source files change
+    dockerfile_hash = filemd5("${path.module}/../src/lambdas/proxy_container/Dockerfile")
+    main_hash       = filemd5("${path.module}/../src/lambdas/proxy_container/app/main.py")
+    requirements_hash = filemd5("${path.module}/../src/lambdas/proxy_container/app/requirements.txt")
+    shared_hash     = md5(join("", [
+      filemd5("${path.module}/../src/lambdas/shared/dynamodb_client.py"),
+      filemd5("${path.module}/../src/lambdas/shared/errors.py"),
+      filemd5("${path.module}/../src/lambdas/shared/oauth_client.py"),
+      filemd5("${path.module}/../src/lambdas/shared/url_rewriter.py")
+    ]))
+    ecr_repo        = module.ecr.proxy_repository_url
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Login to ECR
+      aws ecr get-login-password --region ${var.aws_region} | \
+        finch login --username AWS --password-stdin ${module.ecr.proxy_repository_url}
+      
+      # Build container
+      cd ${path.module}/../src/lambdas
+      finch build \
+        -t ${module.ecr.proxy_repository_url}:latest \
+        -f proxy_container/Dockerfile \
+        --platform linux/amd64 \
+        .
+      
+      # Push to ECR
+      finch push ${module.ecr.proxy_repository_url}:latest
+    EOT
+  }
+
+  depends_on = [module.ecr]
+}
+
 # Lambda Functions
 module "lambda_functions" {
   source = "./modules/lambda-functions"
@@ -30,6 +76,9 @@ module "lambda_functions" {
   cognito_jwks_uri          = module.cognito.jwks_uri
   cognito_client_id         = module.cognito.client_id
   gateway_domain            = "PLACEHOLDER"  # Will be updated by null_resource after API Gateway is created
+  proxy_ecr_repository_url  = module.ecr.proxy_repository_url
+
+  depends_on = [null_resource.build_proxy_container]
 }
 
 # API Gateway
@@ -46,6 +95,7 @@ module "api_gateway" {
   registry_lambda_invoke_arn   = module.lambda_functions.registry_lambda_invoke_arn
   proxy_lambda_name            = module.lambda_functions.proxy_lambda_name
   proxy_lambda_invoke_arn      = module.lambda_functions.proxy_lambda_invoke_arn
+  proxy_lambda_arn             = module.lambda_functions.proxy_lambda_arn
   admin_lambda_name            = module.lambda_functions.admin_lambda_name
   admin_lambda_invoke_arn      = module.lambda_functions.admin_lambda_invoke_arn
 }

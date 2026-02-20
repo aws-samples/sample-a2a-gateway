@@ -52,3 +52,8 @@ variable "gateway_domain" {
   description = "Gateway domain for URL rewriting"
   type        = string
 }
+
+variable "proxy_ecr_repository_url" {
+  description = "ECR repository URL for proxy Lambda container"
+  type        = string
+}

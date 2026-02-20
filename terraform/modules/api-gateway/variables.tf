@@ -44,6 +44,11 @@ variable "proxy_lambda_invoke_arn" {
   type        = string
 }
 
+variable "proxy_lambda_arn" {
+  description = "ARN of the Proxy Lambda function"
+  type        = string
+}
+
 variable "admin_lambda_name" {
   description = "Name of the Admin Lambda function"
   type        = string
