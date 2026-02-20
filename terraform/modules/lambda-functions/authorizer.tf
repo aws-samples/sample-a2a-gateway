@@ -28,6 +28,28 @@ resource "aws_iam_role_policy_attachment" "authorizer_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# DynamoDB read access for FGAC
+resource "aws_iam_role_policy" "authorizer_dynamodb" {
+  name = "dynamodb-read"
+  role = aws_iam_role.authorizer.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          var.permissions_table_arn
+        ]
+      }
+    ]
+  })
+}
+
 # Lambda Function
 # Note: Run scripts/build_lambda_package.sh before terraform apply
 resource "aws_lambda_function" "authorizer" {
@@ -42,10 +64,12 @@ resource "aws_lambda_function" "authorizer" {
 
   environment {
     variables = {
-      COGNITO_JWKS_URI    = var.cognito_jwks_uri
-      COGNITO_ISSUER_URL  = var.cognito_issuer_url
-      COGNITO_CLIENT_ID   = var.cognito_client_id
-      LOG_LEVEL           = "INFO"
+      COGNITO_JWKS_URI       = var.cognito_jwks_uri
+      COGNITO_ISSUER_URL     = var.cognito_issuer_url
+      COGNITO_CLIENT_ID      = var.cognito_client_id
+      AGENT_REGISTRY_TABLE   = var.agent_registry_table_name
+      PERMISSIONS_TABLE      = var.permissions_table_name
+      LOG_LEVEL              = "INFO"
     }
   }
 

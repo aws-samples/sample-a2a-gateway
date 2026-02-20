@@ -13,7 +13,7 @@ from proxy.handler import (
     lambda_handler, parse_path, extract_user_context,
     is_streaming_operation, build_backend_headers
 )
-from shared.errors import BadRequestError, NotFoundError, AuthorizationError
+from shared.errors import BadRequestError, NotFoundError
 
 
 class TestParsePath:
@@ -203,7 +203,6 @@ class TestProxyLambdaHandler:
                 'scopes': ['agent:invoke']
             }
         }
-        mock_db.get_allowed_agents_for_scopes.return_value = {'billing-agent'}
         mock_create_client.return_value = mock_db
         
         # Mock OAuth client
@@ -313,40 +312,9 @@ class TestProxyLambdaHandler:
         
         assert result['statusCode'] == 404
     
-    @patch('proxy.handler.create_client_from_env')
-    def test_permission_denied(self, mock_create_client):
-        """Should return 403 when user lacks permission."""
-        mock_db = Mock()
-        mock_db.get_agent.return_value = {
-            'agentId': 'admin-agent',
-            'status': 'active'
-        }
-        mock_db.get_allowed_agents_for_scopes.return_value = set()  # No permissions
-        mock_create_client.return_value = mock_db
-        
-        os.environ['AGENT_REGISTRY_TABLE'] = 'test-registry'
-        os.environ['PERMISSIONS_TABLE'] = 'test-permissions'
-        
-        event = {
-            'httpMethod': 'POST',
-            'path': '/agents/admin-agent/message:send',
-            'headers': {},
-            'body': '{}',
-            'requestContext': {
-                'authorizer': {
-                    'userId': 'user-123',
-                    'scopes': 'billing:read',
-                    'roles': 'user',
-                    'username': 'testuser'
-                }
-            }
-        }
-        
-        result = lambda_handler(event, None)
-        
-        assert result['statusCode'] == 403
-        body = json.loads(result['body'])
-        assert body['error']['code'] == 'PERMISSION_DENIED'
+    # Note: Permission denied (403) is now handled by the Lambda Authorizer
+    # The authorizer generates IAM policies with specific agent resource ARNs
+    # API Gateway returns 403 before the proxy lambda is even invoked
     
     @patch('proxy.handler.create_client_from_env')
     def test_agent_card_request_returns_cached_card(self, mock_create_client):
@@ -370,7 +338,6 @@ class TestProxyLambdaHandler:
                 'skills': []
             }
         }
-        mock_db.get_allowed_agents_for_scopes.return_value = {'billing-agent'}
         mock_create_client.return_value = mock_db
         
         os.environ['AGENT_REGISTRY_TABLE'] = 'test-registry'
@@ -417,7 +384,6 @@ class TestProxyLambdaHandler:
                 'skills': []
             }
         }
-        mock_db.get_allowed_agents_for_scopes.return_value = {'billing-agent'}
         mock_create_client.return_value = mock_db
         
         os.environ['AGENT_REGISTRY_TABLE'] = 'test-registry'

@@ -14,9 +14,9 @@ from shared.dynamodb_client import create_client_from_env
 from shared.oauth_client import OAuthClient
 from shared.url_rewriter import rewrite_agent_card_urls
 from shared.errors import (
-    GatewayError, BadRequestError, NotFoundError, AuthorizationError,
+    GatewayError, BadRequestError, NotFoundError,
     BackendError, TimeoutError as GatewayTimeoutError,
-    INVALID_PATH_FORMAT, AGENT_NOT_FOUND, PERMISSION_DENIED,
+    INVALID_PATH_FORMAT, AGENT_NOT_FOUND,
     BACKEND_UNREACHABLE, OAUTH_ERROR, STREAM_IDLE_TIMEOUT
 )
 
@@ -79,15 +79,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 {'agentId': agent_id}
             )
         
-        # Check user permissions
-        allowed_agents = db_client.get_allowed_agents_for_scopes(user_context['scopes'])
-        
-        if agent_id not in allowed_agents:
-            raise AuthorizationError(
-                PERMISSION_DENIED,
-                f"User does not have permission to access agent '{agent_id}'",
-                {'agentId': agent_id, 'userId': user_context['userId']}
-            )
+        # Note: FGAC permission check is now handled by the Lambda Authorizer
+        # The authorizer generates IAM policies with specific agent resource ARNs
+        # If we reach this point, the user has already been authorized for this agent
         
         # Special case: Agent Card request - return cached card from DynamoDB
         if operation == '.well-known/agent-card.json' or operation.endswith('/.well-known/agent-card.json'):
