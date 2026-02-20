@@ -23,9 +23,9 @@ from shared.dynamodb_client import DynamoDBClient, create_client_from_env
 from shared.oauth_client import OAuthClient
 from shared.url_rewriter import rewrite_agent_card_urls
 from shared.errors import (
-    GatewayError, BadRequestError, NotFoundError, AuthorizationError,
+    GatewayError, BadRequestError, NotFoundError,
     BackendError, TimeoutError as GatewayTimeoutError,
-    INVALID_PATH_FORMAT, AGENT_NOT_FOUND, PERMISSION_DENIED,
+    INVALID_PATH_FORMAT, AGENT_NOT_FOUND,
     BACKEND_UNREACHABLE, OAUTH_ERROR, STREAM_IDLE_TIMEOUT
 )
 
@@ -185,6 +185,9 @@ async def get_agent_card(
     
     This is a critical A2A compliance feature - returns the cached card
     with URLs rewritten to point to the gateway.
+    
+    Note: FGAC permission check is handled by the Lambda Authorizer.
+    If we reach this point, the user has already been authorized for this agent.
     """
     user_context = extract_user_context(request)
     logger.info(f"Agent card request for {agent_id} by user {user_context.user_id}")
@@ -200,13 +203,6 @@ async def get_agent_card(
     if agent.get('status') != 'active':
         raise HTTPException(status_code=404, detail={
             'error': {'code': AGENT_NOT_FOUND, 'message': f"Agent '{agent_id}' is not available"}
-        })
-    
-    # Check permissions
-    allowed_agents = db_client.get_allowed_agents_for_scopes(user_context.scopes)
-    if agent_id not in allowed_agents:
-        raise HTTPException(status_code=403, detail={
-            'error': {'code': PERMISSION_DENIED, 'message': f"Access denied to agent '{agent_id}'"}
         })
     
     # Get cached agent card
@@ -244,6 +240,9 @@ async def proxy_request(
     Proxy requests to backend agents.
     
     Handles both streaming (SSE) and buffered responses based on operation.
+    
+    Note: FGAC permission check is handled by the Lambda Authorizer.
+    If we reach this point, the user has already been authorized for this agent.
     """
     user_context = extract_user_context(request)
     logger.info(f"Proxy request: {request.method} /agents/{agent_id}/{operation}")
@@ -260,13 +259,6 @@ async def proxy_request(
     if agent.get('status') != 'active':
         raise HTTPException(status_code=404, detail={
             'error': {'code': AGENT_NOT_FOUND, 'message': f"Agent '{agent_id}' is not available"}
-        })
-    
-    # Check permissions
-    allowed_agents = db_client.get_allowed_agents_for_scopes(user_context.scopes)
-    if agent_id not in allowed_agents:
-        raise HTTPException(status_code=403, detail={
-            'error': {'code': PERMISSION_DENIED, 'message': f"Access denied to agent '{agent_id}'"}
         })
     
     # Get OAuth token

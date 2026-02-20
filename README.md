@@ -21,7 +21,9 @@ This gateway fills that gap by implementing all three layers:
 **Control Layer** - Fine-Grained Access Control (FGAC)
 - JWT-based authentication via Cognito
 - Scope-based permissions (who can access which agents)
-- Lambda authorizer for request-level authorization
+- Lambda authorizer generates agent-specific IAM policies
+- Unauthorized requests blocked at API Gateway level (never reach Lambdas)
+- 5-minute policy caching for performance
 - Audit trail through CloudWatch logs
 
 **Data Layer** - Centralized Request Proxying
@@ -55,10 +57,10 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 - Response streaming enabled via Lambda Web Adapter
 
 **Lambda Functions**
-- **Authorizer**: JWT validation, extracts user context (scopes, roles)
-- **Registry**: Agent discovery with permission filtering
+- **Authorizer**: JWT validation, FGAC lookup in DynamoDB, generates IAM policies with agent-specific resource ARNs
+- **Registry**: Agent discovery with permission filtering (returns only agents user can access)
 - **Proxy** (Container): Routes A2A requests to backends with OAuth authentication, supports real-time SSE streaming via FastAPI + Lambda Web Adapter
-- **Admin**: Agent registration and management
+- **Admin**: Agent registration and management (requires `gateway:admin` scope)
 
 **DynamoDB Tables**
 - **AgentRegistry**: Maps agent IDs to backend URLs, auth configs, cached agent cards
@@ -440,10 +442,11 @@ This gateway implements core A2A messaging operations. Below is the full complia
 
 **"Unauthorized" errors**: Check your JWT is valid and not expired. Tokens expire after 60 minutes.
 
-**"Permission denied"**: Make sure you've seeded permissions and your JWT has the right scopes. Check with:
+**"Permission denied"**: The Lambda Authorizer generates IAM policies based on your JWT scopes. If you get a 403, your scopes don't grant access to that agent. Check your JWT scopes:
 ```bash
-echo $JWT | cut -d. -f2 | base64 -d | jq .
+echo $JWT | cut -d. -f2 | base64 -d | jq .scope
 ```
+Then verify the Permissions table maps those scopes to the agent you're trying to access. Note: Authorizer results are cached for 5 minutes, so permission changes may take time to take effect.
 
 **Agent not found**: Verify the agent is registered and status is "active":
 ```bash
