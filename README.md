@@ -479,6 +479,51 @@ aws dynamodb get-item \
 /scripts            - Helper scripts
 ```
 
+## Security Considerations
+
+This gateway is designed as a reference implementation. For production deployments, review the following security considerations:
+
+### Backend Trust Model
+
+The gateway operates on a **trust-after-authentication** model. Once a backend agent is registered and OAuth credentials are validated, the gateway trusts all responses from that backend without content validation. This means:
+
+- Responses from backend agents are proxied directly to clients without inspection
+- A compromised or malicious backend could return harmful content
+- **Production recommendation**: Implement an approval workflow for agent registration. Admins should review backend agents before registration, ideally integrated with CI/CD pipelines for agent deployment.
+
+### Rate Limiting
+
+This sample does not implement rate limiting. Without throttling:
+
+- Excessive API calls could lead to unexpected AWS costs
+- A single client could degrade service for others
+- **Production recommendation**: Configure API Gateway throttling, Lambda concurrency limits, and AWS Budgets with alerts.
+
+### CORS Configuration
+
+CORS is configured with `Access-Control-Allow-Origin: '*'` for ease of development. This allows any origin to make requests to the API.
+
+- **Production recommendation**: Restrict CORS to specific trusted origins.
+
+### Permission Propagation Delay
+
+The Lambda Authorizer caches results for 5 minutes for performance. This means:
+
+- Permission revocations may take up to 5 minutes to take effect
+- Newly granted permissions may also have a delay
+- The cache TTL is configurable in `terraform/modules/api-gateway/main.tf`
+
+### Prompt Injection
+
+The gateway proxies A2A messages without modification.
+- Backend agents are responsible for implementing prompt injection defenses
+- The gateway provides access control *to* agents, not *within* agents
+- Consider integrating guardrails at the backend agent level
+
+### API Gateway Timeout
+
+API Gateway REST API has a default 29-second integration timeout. For long-running agent operations, request an AWS quota increase (up to 15 minutes).
+
 ## Clean Up
 
 ```bash
