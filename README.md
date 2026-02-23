@@ -1,6 +1,6 @@
 # A2A Gateway
 
-by Reilly Manton
+by Reilly Manton, Wesley Petry, Scott Wainner
 
 A production-ready, serverless A2A gateway that provides the complete three-layer architecture required for enterprise agent deployments: management, control, and data layers.
 
