@@ -127,7 +127,7 @@ For non-Bedrock backends, the gateway forwards JSON-RPC formatted requests. Back
 
 ### 1. Configure Terraform Backend (for remote tfstate)
 
-Edit `terraform/backend.tf` - uncomment and set your S3 bucket:
+Edit `terraform/backend.tf` - uncomment the S3 backend block and set your bucket name:
 
 ```hcl
 terraform {
@@ -139,6 +139,8 @@ terraform {
   }
 }
 ```
+
+**Note:** The S3 backend is commented out by default. If you skip this step, Terraform will use local state storage, which is fine for individual testing but not recommended for team environments.
 
 ### 2. Set Variables
 
