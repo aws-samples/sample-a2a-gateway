@@ -11,9 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src/lambdas'))
 
 from proxy.handler import (
     lambda_handler, parse_path, extract_user_context,
-    is_streaming_operation, build_backend_headers
+    is_streaming_operation, build_backend_headers,
+    detect_jsonrpc_request, normalize_jsonrpc_method,
+    format_error_response
 )
-from shared.errors import BadRequestError, NotFoundError
+from shared.errors import BadRequestError, NotFoundError, GatewayError
 
 
 class TestParsePath:
@@ -75,12 +77,12 @@ class TestParsePath:
         assert agent_id == 'billing-agent'
         assert operation == 'message:send'
     
-    def test_parse_invalid_no_operation(self):
-        """Should raise error for missing operation."""
-        with pytest.raises(BadRequestError) as exc_info:
-            parse_path('/agents/billing-agent')
+    def test_parse_base_path_for_jsonrpc(self):
+        """Should parse base path for JSON-RPC requests."""
+        agent_id, operation = parse_path('/agents/billing-agent')
         
-        assert exc_info.value.code == 'INVALID_PATH_FORMAT'
+        assert agent_id == 'billing-agent'
+        assert operation == ''  # Empty operation for JSON-RPC base path
     
     def test_parse_invalid_no_agents_prefix(self):
         """Should raise error for missing 'agents' prefix."""
@@ -187,8 +189,8 @@ class TestProxyLambdaHandler:
     
     @patch('proxy.handler.create_client_from_env')
     @patch('proxy.handler.OAuthClient')
-    @patch('proxy.handler.forward_request')
-    def test_successful_message_send(self, mock_forward, mock_oauth_class, mock_create_client):
+    @patch('proxy.handler.handle_rest_to_jsonrpc')
+    def test_successful_message_send(self, mock_handle_rest, mock_oauth_class, mock_create_client):
         """Should successfully proxy message:send request."""
         # Mock DynamoDB client
         mock_db = Mock()
@@ -210,8 +212,8 @@ class TestProxyLambdaHandler:
         mock_oauth.get_access_token.return_value = 'backend-token-123'
         mock_oauth_class.return_value = mock_oauth
         
-        # Mock forward_request
-        mock_forward.return_value = {
+        # Mock handle_rest_to_jsonrpc
+        mock_handle_rest.return_value = {
             'statusCode': 200,
             'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({'task': {'id': 'task-123'}})
@@ -243,11 +245,81 @@ class TestProxyLambdaHandler:
         # Verify OAuth token was obtained
         mock_oauth.get_access_token.assert_called_once()
         
-        # Verify request was forwarded
-        mock_forward.assert_called_once()
-        call_args = mock_forward.call_args[1]
-        assert call_args['url'] == 'https://backend1.example.com/message:send'
+        # Verify request was handled
+        mock_handle_rest.assert_called_once()
+        call_args = mock_handle_rest.call_args[1]
+        assert call_args['backend_url'] == 'https://backend1.example.com'
+        assert call_args['operation'] == 'message:send'
         assert call_args['access_token'] == 'backend-token-123'
+    
+    @patch('proxy.handler.create_client_from_env')
+    @patch('proxy.handler.OAuthClient')
+    @patch('proxy.handler.handle_jsonrpc_to_jsonrpc')
+    def test_successful_jsonrpc_message_send(self, mock_handle_jsonrpc, mock_oauth_class, mock_create_client):
+        """Should successfully proxy JSON-RPC SendMessage request."""
+        # Mock DynamoDB client
+        mock_db = Mock()
+        mock_db.get_agent.return_value = {
+            'agentId': 'billing-agent',
+            'backendUrl': 'https://backend1.example.com',
+            'status': 'active',
+            'authConfig': {}
+        }
+        mock_create_client.return_value = mock_db
+        
+        # Mock OAuth client
+        mock_oauth = Mock()
+        mock_oauth.get_access_token.return_value = 'backend-token-123'
+        mock_oauth_class.return_value = mock_oauth
+        
+        # Mock handle_jsonrpc_to_jsonrpc
+        mock_handle_jsonrpc.return_value = {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({
+                'jsonrpc': '2.0',
+                'id': 'req-123',
+                'result': {'task': {'id': 'task-123'}}
+            })
+        }
+        
+        # Set environment
+        os.environ['AGENT_REGISTRY_TABLE'] = 'test-registry'
+        os.environ['PERMISSIONS_TABLE'] = 'test-permissions'
+        
+        # JSON-RPC request
+        jsonrpc_body = {
+            'jsonrpc': '2.0',
+            'id': 'req-123',
+            'method': 'SendMessage',
+            'params': {
+                'message': {'messageId': 'msg-123', 'role': 'ROLE_USER', 'parts': []}
+            }
+        }
+        
+        event = {
+            'httpMethod': 'POST',
+            'path': '/agents/billing-agent',
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(jsonrpc_body),
+            'requestContext': {
+                'authorizer': {
+                    'userId': 'user-123',
+                    'scopes': 'billing:read',
+                    'roles': 'user',
+                    'username': 'testuser'
+                }
+            }
+        }
+        
+        result = lambda_handler(event, None)
+        
+        assert result['statusCode'] == 200
+        
+        # Verify JSON-RPC handler was called
+        mock_handle_jsonrpc.assert_called_once()
+        call_args = mock_handle_jsonrpc.call_args[1]
+        assert call_args['jsonrpc_request']['method'] == 'SendMessage'
     
     @patch('proxy.handler.create_client_from_env')
     def test_agent_not_found(self, mock_create_client):
@@ -405,13 +477,135 @@ class TestProxyLambdaHandler:
             }
         }
         
-        # This should NOT call forward_request
-        with patch('proxy.handler.forward_request') as mock_forward:
-            result = lambda_handler(event, None)
-            
-            # Verify forward_request was NOT called
-            mock_forward.assert_not_called()
-            
-            # Verify we got a successful response
-            assert result['statusCode'] == 200
+        # This should NOT call handle_rest_to_jsonrpc or handle_jsonrpc_to_jsonrpc
+        with patch('proxy.handler.handle_rest_to_jsonrpc') as mock_rest:
+            with patch('proxy.handler.handle_jsonrpc_to_jsonrpc') as mock_jsonrpc:
+                result = lambda_handler(event, None)
+                
+                # Verify handlers were NOT called
+                mock_rest.assert_not_called()
+                mock_jsonrpc.assert_not_called()
+                
+                # Verify we got a successful response
+                assert result['statusCode'] == 200
+
+
+class TestJsonRpcDetection:
+    """Test JSON-RPC request detection."""
+    
+    def test_detect_valid_jsonrpc_request(self):
+        """Should detect valid JSON-RPC 2.0 request."""
+        body = {
+            'jsonrpc': '2.0',
+            'id': 'req-123',
+            'method': 'SendMessage',
+            'params': {}
+        }
+        
+        is_jsonrpc, request_id = detect_jsonrpc_request(body)
+        
+        assert is_jsonrpc is True
+        assert request_id == 'req-123'
+    
+    def test_detect_jsonrpc_without_id(self):
+        """Should detect JSON-RPC request without id (notification)."""
+        body = {
+            'jsonrpc': '2.0',
+            'method': 'SendMessage',
+            'params': {}
+        }
+        
+        is_jsonrpc, request_id = detect_jsonrpc_request(body)
+        
+        assert is_jsonrpc is True
+        assert request_id is None
+    
+    def test_detect_rest_request(self):
+        """Should not detect REST request as JSON-RPC."""
+        body = {
+            'message': {
+                'messageId': 'msg-123',
+                'role': 'ROLE_USER',
+                'parts': []
+            }
+        }
+        
+        is_jsonrpc, request_id = detect_jsonrpc_request(body)
+        
+        assert is_jsonrpc is False
+        assert request_id is None
+    
+    def test_detect_none_body(self):
+        """Should handle None body."""
+        is_jsonrpc, request_id = detect_jsonrpc_request(None)
+        
+        assert is_jsonrpc is False
+        assert request_id is None
+    
+    def test_detect_wrong_jsonrpc_version(self):
+        """Should not detect wrong JSON-RPC version."""
+        body = {
+            'jsonrpc': '1.0',
+            'method': 'SendMessage'
+        }
+        
+        is_jsonrpc, request_id = detect_jsonrpc_request(body)
+        
+        assert is_jsonrpc is False
+
+
+class TestJsonRpcMethodNormalization:
+    """Test JSON-RPC method name normalization."""
+    
+    def test_normalize_send_message(self):
+        """Should normalize SendMessage to message/send."""
+        assert normalize_jsonrpc_method('SendMessage') == 'message/send'
+    
+    def test_normalize_send_streaming_message(self):
+        """Should normalize SendStreamingMessage to message/stream."""
+        assert normalize_jsonrpc_method('SendStreamingMessage') == 'message/stream'
+    
+    def test_passthrough_already_normalized(self):
+        """Should pass through already normalized methods."""
+        assert normalize_jsonrpc_method('message/send') == 'message/send'
+        assert normalize_jsonrpc_method('message/stream') == 'message/stream'
+
+
+class TestErrorFormatting:
+    """Test error response formatting for different protocols."""
+    
+    def test_rest_error_format(self):
+        """Should format error for REST client."""
+        error = GatewayError('TEST_ERROR', 'Test error message', 400, {'detail': 'test'})
+        
+        response = format_error_response(error, is_jsonrpc=False, jsonrpc_id=None)
+        
+        assert response['statusCode'] == 400
+        body = json.loads(response['body'])
+        assert body['error']['code'] == 'TEST_ERROR'
+        assert body['error']['message'] == 'Test error message'
+    
+    def test_jsonrpc_error_format(self):
+        """Should format error for JSON-RPC client."""
+        error = GatewayError('TEST_ERROR', 'Test error message', 400, {'detail': 'test'})
+        
+        response = format_error_response(error, is_jsonrpc=True, jsonrpc_id='req-123')
+        
+        # JSON-RPC errors return 200 with error in body
+        assert response['statusCode'] == 200
+        body = json.loads(response['body'])
+        assert body['jsonrpc'] == '2.0'
+        assert body['id'] == 'req-123'
+        assert body['error']['code'] == -32602  # Invalid params for 400
+        assert body['error']['message'] == 'Test error message'
+        assert body['error']['data']['code'] == 'TEST_ERROR'
+    
+    def test_jsonrpc_error_without_id(self):
+        """Should handle JSON-RPC error without request id."""
+        error = GatewayError('TEST_ERROR', 'Test error message', 500)
+        
+        response = format_error_response(error, is_jsonrpc=True, jsonrpc_id=None)
+        
+        body = json.loads(response['body'])
+        assert body['id'] is None
 

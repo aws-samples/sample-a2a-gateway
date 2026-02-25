@@ -50,19 +50,21 @@ resource "null_resource" "build_proxy_container" {
   provisioner "local-exec" {
     command = <<-EOT
       # Login to ECR
+      ECR_REGISTRY=$(echo "${module.ecr.proxy_repository_url}" | cut -d'/' -f1)
       aws ecr get-login-password --region ${var.aws_region} | \
-        finch login --username AWS --password-stdin ${module.ecr.proxy_repository_url}
+        docker login --username AWS --password-stdin $ECR_REGISTRY
       
       # Build container
       cd ${path.module}/../src/lambdas
-      finch build \
+      docker build \
         -t ${module.ecr.proxy_repository_url}:latest \
         -f proxy_container/Dockerfile \
         --platform linux/amd64 \
+        --provenance=false \
         .
       
       # Push to ECR
-      finch push ${module.ecr.proxy_repository_url}:latest
+      docker push ${module.ecr.proxy_repository_url}:latest
     EOT
   }
 

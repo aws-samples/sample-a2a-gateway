@@ -2,7 +2,7 @@
 
 by Reilly Manton, Wesley Petry, Scott Wainner
 
-A production-ready, serverless A2A gateway that provides the complete three-layer architecture required for enterprise agent deployments: management, control, and data layers.
+A serverless A2A gateway that provides the complete three-layer architecture required for enterprise agent deployments: management, control, and data layers.
 
 ## Why This Matters
 
@@ -38,13 +38,14 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 
 **Key Features**:
 - ✅ Fully A2A protocol compliant
+- ✅ Dual protocol binding support (HTTP+JSON/REST and JSON-RPC)
 - ✅ Fine-grained access control via Cognito JWT scopes
 - ✅ Semantic search for agent discovery via S3 Vectors
 - ✅ SSE streaming support for `message:stream` operations
 - ✅ OAuth 2.0 Client Credentials flow for backend authentication
 - ✅ Serverless architecture (API Gateway + Lambda + DynamoDB)
 - ✅ Native support for AWS Bedrock AgentCore Runtime backends
-- ✅ Automatic protocol translation (HTTP A2A ↔ JSON-RPC for Bedrock)
+- ✅ Automatic protocol translation to JSON-RPC for all backends
 
 ## Architecture
 
@@ -74,7 +75,9 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 
 ### A2A Operations Supported
 
-All standard A2A operations work through the gateway:
+The gateway supports both A2A protocol bindings as defined in the [A2A specification](https://a2a-protocol.org/latest/specification/):
+
+#### HTTP+JSON/REST Binding (RESTful URLs)
 
 - `POST /agents/{agentId}/message:send` - Send message (buffered)
 - `POST /agents/{agentId}/message:stream` - Send message (SSE streaming)
@@ -83,29 +86,34 @@ All standard A2A operations work through the gateway:
 - `GET /agents/{agentId}/tasks/{taskId}` - Get task status
 - `POST /agents/{agentId}/tasks/{taskId}:cancel` - Cancel task
 
+#### JSON-RPC Binding (Single endpoint with method in body)
+
+- `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "SendMessage", ...}`
+- `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "SendStreamingMessage", ...}`
+
+The gateway automatically detects the protocol binding based on the request format and translates to JSON-RPC for all backend communication.
+
 ### Backend Support
 
-The gateway supports two types of A2A backends:
-
-**Standard A2A Servers**
-
-Standard HTTP-based A2A servers that implement the A2A protocol directly. The gateway forwards HTTP requests as-is with OAuth authentication.
+The gateway translates all inbound requests to JSON-RPC format for backend communication. This provides a consistent interface regardless of which protocol binding clients use.
 
 **AWS Bedrock AgentCore Runtime**
 
 The gateway provides native support for agents deployed on AWS Bedrock AgentCore Runtime. It automatically:
 
-1. **Detects Bedrock backends** - Identifies backends by URL pattern (`bedrock-agentcore`)
-2. **Protocol translation** - Converts HTTP A2A to JSON-RPC format:
-   - `message:send` → `message/send` (colon to slash)
+1. **Protocol translation** - Converts to JSON-RPC format:
+   - `message:send` → `message/send` 
+   - `SendMessage` → `message/send`
    - Wraps requests in JSON-RPC envelopes
-3. **Format transformation** - Adapts A2A conventions to Bedrock format:
+2. **Format transformation** - Adapts A2A conventions to Bedrock format:
    - `ROLE_USER` → `user`
    - `ROLE_AGENT` → `agent`
-4. **Session management** - Adds required `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` headers
-5. **Endpoint routing** - Routes all operations to `/invocations` endpoint
+3. **Session management** - Adds required `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` headers
+4. **Endpoint routing** - Routes all operations to `/invocations` endpoint
 
-This means standard A2A clients can seamlessly interact with Bedrock AgentCore agents through the gateway without any client-side changes.
+**Standard A2A Servers**
+
+For non-Bedrock backends, the gateway forwards JSON-RPC formatted requests. Backends should implement JSON-RPC handlers for A2A operations.
 
 ## Quick Start
 
@@ -114,7 +122,7 @@ This means standard A2A clients can seamlessly interact with Bedrock AgentCore a
 - Terraform >= 1.5.0
 - Python 3.12
 - AWS CLI configured
-- Finch (container runtime) - [Install Finch](https://github.com/runfinch/finch)
+- Docker (container runtime for building proxy Lambda)
 - S3 bucket for Terraform state
 
 ### 1. Configure Terraform Backend (for remote tfstate)
@@ -148,7 +156,7 @@ environment  = "poc"
 
 ### 3. Build Lambda Package
 
-Build the zip package for non-container Lambdas (Authorizer, Registry, Admin):
+Build the zip package for non-container Lambdas (Authorizer, Registry, Search, Admin):
 
 ```bash
 ./scripts/build_lambda_package.sh
@@ -167,14 +175,14 @@ This creates everything in one go:
 - DynamoDB tables (AgentRegistry, Permissions)
 - Cognito User Pool
 - ECR repository for the proxy container
-- Builds and pushes the proxy container image (requires Finch)
-- 4 Lambda functions (Authorizer, Registry, Proxy container, Admin)
+- Builds and pushes the proxy container image automatically (requires Docker)
+- 5 Lambda functions (Authorizer, Registry, Search, Proxy container, Admin)
 - API Gateway with Lambda Authorizer and response streaming
 - IAM roles and policies
 - Secrets Manager setup
 - Automatically updates Lambda env vars with the API Gateway URL
 
-**Note**: The proxy Lambda is container-based to support response streaming. Terraform automatically builds and pushes the container image to ECR during deployment.
+**Note**: The proxy Lambda container is built and pushed automatically by Terraform. The other Lambdas use the zip package built in step 3.
 
 ### 5. (Optional) Seed Example Permissions
 
@@ -332,7 +340,9 @@ curl $GATEWAY_URL/agents/bedrock-agent/.well-known/agent-card.json \
 
 ### 6. Send Messages to Agents
 
-Send a message to an agent (buffered response):
+#### HTTP+JSON/REST Binding
+
+Send a message using RESTful URLs (buffered response):
 
 ```bash
 curl -X POST $GATEWAY_URL/agents/bedrock-agent/message:send \
@@ -343,6 +353,28 @@ curl -X POST $GATEWAY_URL/agents/bedrock-agent/message:send \
       "messageId": "msg-123",
       "role": "ROLE_USER",
       "parts": [{"text": "Calculate 2 + 2"}]
+    }
+  }' | jq .
+```
+
+#### JSON-RPC Binding
+
+Send a message using JSON-RPC format (method in body):
+
+```bash
+curl -X POST $GATEWAY_URL/agents/bedrock-agent \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "req-123",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-123",
+        "role": "ROLE_USER",
+        "parts": [{"text": "Calculate 2 + 2"}]
+      }
     }
   }' | jq .
 ```
@@ -377,12 +409,14 @@ Example response (streaming chunks from Bedrock AgentCore):
 ]
 ```
 
-### 6. Stream Responses
+### 7. Stream Responses
 
-For streaming responses (SSE):
+#### HTTP+JSON/REST Binding
+
+For streaming responses using RESTful URLs (SSE):
 
 ```bash
-curl -X POST $GATEWAY_URL/agents/bedrock-agent/message:stream \
+curl -N -X POST $GATEWAY_URL/agents/bedrock-agent/message:stream \
   -H "Authorization: Bearer $JWT" \
   -H "Content-Type: application/json" \
   -d '{
@@ -390,6 +424,28 @@ curl -X POST $GATEWAY_URL/agents/bedrock-agent/message:stream \
       "messageId": "msg-456",
       "role": "ROLE_USER",
       "parts": [{"text": "What is 101 * 11?"}]
+    }
+  }'
+```
+
+#### JSON-RPC Binding
+
+For streaming responses using JSON-RPC format:
+
+```bash
+curl -N -X POST $GATEWAY_URL/agents/bedrock-agent \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "req-456",
+    "method": "SendStreamingMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-456",
+        "role": "ROLE_USER",
+        "parts": [{"text": "What is 101 * 11?"}]
+      }
     }
   }'
 ```
@@ -450,7 +506,16 @@ pytest tests/property/ -v -m property_test
 
 ## A2A Protocol Compliance
 
-This gateway implements core A2A messaging operations. Below is the full compliance status:
+This gateway implements core A2A messaging operations with support for both protocol bindings. Below is the full compliance status:
+
+### Protocol Bindings
+
+| Binding | Status | Notes |
+|---------|--------|-------|
+| **HTTP+JSON/REST** | ✅ Supported | RESTful URLs like `/message:send` |
+| **JSON-RPC** | ✅ Supported | Single endpoint with method in body |
+
+### Operations
 
 | Operation | Endpoint | Status | Notes |
 |-----------|----------|--------|-------|
@@ -469,7 +534,7 @@ This gateway implements core A2A messaging operations. Below is the full complia
 
 **Task Management**: Task lifecycle operations (get, list, cancel, subscribe) are not implemented. The gateway focuses on stateless message proxying rather than task state management.
 
-**Integration Timeout**: API Gateway REST API has a default 29-second integration timeout. For long-running operations, you can request a quota increase from AWS to extend this up to 15 minutes.
+**Integration Timeout**: API Gateway REST API has a default 29-second integration timeout. This gateway is configured for 300 seconds (5 minutes), but you must request a quota increase from AWS Support to enable timeouts beyond 29 seconds. Without the quota increase, requests will timeout at 29 seconds regardless of the configured value. Request the "Amazon API Gateway - REST API integration timeout" quota increase in the AWS Service Quotas console.
 
 ## Troubleshooting
 
@@ -555,7 +620,7 @@ The gateway proxies A2A messages without modification.
 
 ### API Gateway Timeout
 
-API Gateway REST API has a default 29-second integration timeout. For long-running agent operations, request an AWS quota increase.
+API Gateway REST API has a default 29-second integration timeout. This gateway configures 300 seconds, but you must request a quota increase from AWS Support first. Go to AWS Service Quotas console and request an increase for "Amazon API Gateway - REST API integration timeout".
 
 ## Clean Up
 

@@ -226,6 +226,110 @@ async def get_agent_card(
 
 
 @app.api_route(
+    "/agents/{agent_id}",
+    methods=["POST"]
+)
+async def proxy_jsonrpc_request(
+    agent_id: str,
+    request: Request,
+    db_client: DynamoDBClient = Depends(get_db_client),
+    oauth_client: OAuthClient = Depends(get_oauth_client)
+):
+    """
+    Handle JSON-RPC requests on the base agent path.
+    
+    JSON-RPC clients POST to /agents/{agent_id} with method in the body.
+    """
+    user_context = extract_user_context(request)
+    logger.info(f"JSON-RPC request: POST /agents/{agent_id}")
+    logger.info(f"User: {user_context.user_id}, Scopes: {user_context.scopes}")
+    
+    # Get agent from registry
+    agent = db_client.get_agent(agent_id)
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail={
+            'error': {'code': AGENT_NOT_FOUND, 'message': f"Agent '{agent_id}' not found"}
+        })
+    
+    if agent.get('status') != 'active':
+        raise HTTPException(status_code=404, detail={
+            'error': {'code': AGENT_NOT_FOUND, 'message': f"Agent '{agent_id}' is not available"}
+        })
+    
+    # Read and parse request body
+    body = await request.body()
+    body_str = body.decode('utf-8') if body else None
+    
+    try:
+        jsonrpc_request = json.loads(body_str) if body_str else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail={
+            'error': {'code': 'INVALID_JSON', 'message': 'Request body must be valid JSON'}
+        })
+    
+    # Validate JSON-RPC format
+    if jsonrpc_request.get('jsonrpc') != '2.0' or 'method' not in jsonrpc_request:
+        raise HTTPException(status_code=400, detail={
+            'error': {'code': 'INVALID_JSONRPC', 'message': 'Invalid JSON-RPC 2.0 request'}
+        })
+    
+    # Get OAuth token
+    auth_config = agent.get('authConfig', {})
+    try:
+        access_token = oauth_client.get_access_token(agent_id, auth_config)
+    except Exception as e:
+        logger.error(f"OAuth error: {e}")
+        raise HTTPException(status_code=502, detail={
+            'error': {'code': OAUTH_ERROR, 'message': f"Failed to authenticate with backend"}
+        })
+    
+    backend_url = agent['backendUrl']
+    method = jsonrpc_request.get('method', '')
+    is_streaming = method in ('SendStreamingMessage', 'message/stream')
+    
+    # Transform params
+    params = jsonrpc_request.get('params', {})
+    transformed_params = transform_a2a_to_bedrock_format(params)
+    
+    # Normalize method name
+    method_map = {
+        'SendMessage': 'message/send',
+        'SendStreamingMessage': 'message/stream',
+    }
+    normalized_method = method_map.get(method, method)
+    
+    # Build forwarded request
+    from uuid import uuid4
+    forward_request = {
+        'jsonrpc': '2.0',
+        'id': jsonrpc_request.get('id') or str(uuid4()),
+        'method': normalized_method,
+        'params': transformed_params
+    }
+    
+    # Build URL
+    if '/invocations' not in backend_url:
+        invoke_url = f"{backend_url.rstrip('/')}/invocations"
+    else:
+        invoke_url = backend_url.rstrip('/')
+    
+    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method: {normalized_method}")
+    
+    # Build headers
+    backend_headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+    }
+    
+    if is_streaming:
+        return await stream_bedrock_response(invoke_url, forward_request, backend_headers)
+    else:
+        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers)
+
+
+@app.api_route(
     "/agents/{agent_id}/{operation:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
 )

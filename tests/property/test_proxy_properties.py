@@ -27,6 +27,9 @@ def test_property_path_parsing(agent_id, operation):
     Property 10: For any valid agentId and operation, parse_path should
     correctly extract both components from the path.
     """
+    # Skip operations that are only slashes (they get stripped)
+    assume(operation.strip('/') != '')
+    
     path = f"/agents/{agent_id}/{operation}"
     
     parsed_agent_id, parsed_operation = parse_path(path)
