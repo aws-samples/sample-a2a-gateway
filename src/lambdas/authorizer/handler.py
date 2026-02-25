@@ -157,6 +157,8 @@ def generate_policy(
     for agent_id in allowed_agents:
         # Allow all methods and sub-paths for this agent
         resources.append(f"{base_arn}/*/agents/{agent_id}/*")
+        # Also allow base path for JSON-RPC requests (POST /agents/{agentId})
+        resources.append(f"{base_arn}/*/agents/{agent_id}")
     
     # If no agents allowed, we still return a valid policy
     # The user can access /agents (registry) but no specific agents
