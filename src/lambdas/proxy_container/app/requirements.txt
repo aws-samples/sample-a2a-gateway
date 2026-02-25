@@ -9,5 +9,5 @@ httpx==0.27.0
 boto3==1.34.51
 
 # Shared dependencies (same as main requirements)
-requests==2.31.0
+requests==2.32.4
 python-dateutil==2.8.2
