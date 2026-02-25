@@ -57,3 +57,21 @@ variable "proxy_ecr_repository_url" {
   description = "ECR repository URL for proxy Lambda container"
   type        = string
 }
+
+variable "vector_bucket_name" {
+  description = "Name of the S3 vector bucket for semantic search"
+  type        = string
+  default     = ""
+}
+
+variable "vector_bucket_arn" {
+  description = "ARN of the S3 vector bucket for semantic search"
+  type        = string
+  default     = ""
+}
+
+variable "vector_index_name" {
+  description = "Name of the vector index for semantic search"
+  type        = string
+  default     = ""
+}

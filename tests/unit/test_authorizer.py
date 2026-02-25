@@ -133,10 +133,11 @@ class TestGeneratePolicy:
             context=context
         )
         
-        # Should only have registry endpoint
+        # Should have registry and search endpoints (both do their own filtering)
         resources = policy['policyDocument']['Statement'][0]['Resource']
-        assert len(resources) == 1
+        assert len(resources) == 2
         assert 'arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/GET/agents' in resources
+        assert 'arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/POST/search' in resources
     
     def test_generate_policy_empty_scopes(self):
         """Should handle empty scopes and roles."""
@@ -246,14 +247,15 @@ class TestLambdaHandler:
         
         result = lambda_handler(event, None)
         
-        # Should still get Allow policy (for registry endpoint)
+        # Should still get Allow policy (for registry and search endpoints)
         assert result['principalId'] == 'user-123'
         assert result['policyDocument']['Statement'][0]['Effect'] == 'Allow'
         
-        # But only registry endpoint in resources
+        # Registry and search endpoints in resources (both do their own filtering)
         resources = result['policyDocument']['Statement'][0]['Resource']
-        assert len(resources) == 1
-        assert resources[0].endswith('/GET/agents')
+        assert len(resources) == 2
+        assert any(r.endswith('/GET/agents') for r in resources)
+        assert any(r.endswith('/POST/search') for r in resources)
     
     @patch('authorizer.handler.create_validator_from_env')
     def test_missing_token_raises_unauthorized(self, mock_create_validator):

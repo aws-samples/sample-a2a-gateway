@@ -57,3 +57,19 @@ output "admin_lambda_name" {
   description = "Name of the Admin Lambda function"
   value       = aws_lambda_function.admin.function_name
 }
+
+
+output "search_lambda_arn" {
+  description = "ARN of the Search Lambda function"
+  value       = aws_lambda_function.search.arn
+}
+
+output "search_lambda_invoke_arn" {
+  description = "Invoke ARN of the Search Lambda function"
+  value       = aws_lambda_function.search.invoke_arn
+}
+
+output "search_lambda_name" {
+  description = "Name of the Search Lambda function"
+  value       = aws_lambda_function.search.function_name
+}

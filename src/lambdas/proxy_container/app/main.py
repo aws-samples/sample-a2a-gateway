@@ -362,7 +362,7 @@ async def buffered_bedrock_response(
     headers: dict
 ) -> JSONResponse:
     """Make buffered request to Bedrock AgentCore."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             response = await client.post(url, json=jsonrpc_request, headers=headers)
             
@@ -382,7 +382,7 @@ async def buffered_bedrock_response(
         except httpx.RequestError as e:
             logger.error(f"Backend request failed: {e}")
             raise HTTPException(status_code=502, detail={
-                'error': {'code': BACKEND_UNREACHABLE, 'message': f'Failed to connect to backend'}
+                'error': {'code': BACKEND_UNREACHABLE, 'message': 'Failed to connect to backend'}
             })
 
 
@@ -450,44 +450,62 @@ async def buffered_standard_response(
     method: str,
     body: Optional[str],
     headers: dict
-) -> Response:
-    """Make buffered request to standard backend."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                content=body.encode('utf-8') if body else None
-            )
-            
-            # Build response headers
-            response_headers = {
-                'Content-Type': response.headers.get('Content-Type', 'application/json'),
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-            }
-            
-            # Forward additional headers
-            for key, value in response.headers.items():
-                if key.lower() not in EXCLUDED_HEADERS:
-                    response_headers[key] = value
-            
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=response_headers
-            )
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail={
-                'error': {'code': 'BACKEND_TIMEOUT', 'message': 'Backend request timed out'}
-            })
-        except httpx.RequestError as e:
-            logger.error(f"Backend request failed: {e}")
-            raise HTTPException(status_code=502, detail={
-                'error': {'code': BACKEND_UNREACHABLE, 'message': f'Failed to connect to backend'}
-            })
+) -> StreamingResponse:
+    """Make buffered request to standard backend with keepalive pings."""
+    import asyncio
+    
+    KEEPALIVE_INTERVAL = 10  # seconds
+    
+    async def generate() -> AsyncGenerator[bytes, None]:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            try:
+                # Start the request as a task
+                request_task = asyncio.create_task(
+                    client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        content=body.encode('utf-8') if body else None
+                    )
+                )
+                
+                # Send keepalives while waiting for response
+                while not request_task.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(request_task),
+                            timeout=KEEPALIVE_INTERVAL
+                        )
+                    except asyncio.TimeoutError:
+                        # Request still pending, send keepalive
+                        yield b": keepalive\n\n"
+                
+                # Get the response
+                response = request_task.result()
+                
+                # Yield the actual response content
+                yield response.content
+                    
+            except httpx.TimeoutException:
+                yield json.dumps({
+                    'error': {'code': 'BACKEND_TIMEOUT', 'message': 'Backend request timed out'}
+                }).encode('utf-8')
+            except httpx.RequestError as e:
+                logger.error(f"Backend request failed: {e}")
+                yield json.dumps({
+                    'error': {'code': BACKEND_UNREACHABLE, 'message': 'Failed to connect to backend'}
+                }).encode('utf-8')
+    
+    return StreamingResponse(
+        generate(),
+        media_type='application/json',
+        headers={
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+        }
+    )
 
 
 async def stream_standard_response(
@@ -496,26 +514,74 @@ async def stream_standard_response(
     body: Optional[str],
     headers: dict
 ) -> StreamingResponse:
-    """Stream response from standard backend."""
+    """Stream response from standard backend with keepalive pings every 10s."""
     
     async def generate() -> AsyncGenerator[bytes, None]:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=30.0)) as client:
+        import asyncio
+        
+        KEEPALIVE_INTERVAL = 10  # seconds
+        queue: asyncio.Queue = asyncio.Queue()
+        stream_done = asyncio.Event()
+        
+        async def read_stream():
+            """Read from backend and put lines in queue."""
+            async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=30.0)) as client:
+                try:
+                    async with client.stream(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        content=body.encode('utf-8') if body else None
+                    ) as response:
+                        async for line in response.aiter_lines():
+                            if line:
+                                await queue.put(('data', (line + '\n').encode('utf-8')))
+                    await queue.put(('done', None))
+                except httpx.TimeoutException:
+                    logger.error("Stream timeout")
+                    await queue.put(('error', b'event: error\ndata: {"error": "Stream timeout"}\n\n'))
+                except httpx.RequestError as e:
+                    logger.error(f"Stream error: {e}")
+                    await queue.put(('error', b'event: error\ndata: {"error": "Backend connection failed"}\n\n'))
+                except Exception as e:
+                    logger.error(f"Unexpected stream error: {e}")
+                    await queue.put(('error', b'event: error\ndata: {"error": "Unexpected error"}\n\n'))
+                finally:
+                    stream_done.set()
+        
+        async def send_keepalives():
+            """Send keepalive pings every KEEPALIVE_INTERVAL seconds."""
+            while not stream_done.is_set():
+                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                if not stream_done.is_set():
+                    await queue.put(('keepalive', b": keepalive\n\n"))
+        
+        # Start background tasks
+        stream_task = asyncio.create_task(read_stream())
+        keepalive_task = asyncio.create_task(send_keepalives())
+        
+        try:
+            while True:
+                try:
+                    msg_type, data = await asyncio.wait_for(queue.get(), timeout=30)
+                    if msg_type == 'done':
+                        break
+                    elif msg_type == 'error':
+                        yield data
+                        break
+                    elif msg_type in ('data', 'keepalive'):
+                        yield data
+                except asyncio.TimeoutError:
+                    # Safety keepalive if queue is stuck
+                    yield b": keepalive\n\n"
+        finally:
+            stream_done.set()
+            keepalive_task.cancel()
             try:
-                async with client.stream(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    content=body.encode('utf-8') if body else None
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if line:
-                            yield (line + '\n').encode('utf-8')
-            except httpx.TimeoutException:
-                logger.error("Stream timeout")
-                yield b'event: error\ndata: {"error": "Stream timeout"}\n\n'
-            except httpx.RequestError as e:
-                logger.error(f"Stream error: {e}")
-                yield b'event: error\ndata: {"error": "Backend connection failed"}\n\n'
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
+            await stream_task
     
     return StreamingResponse(
         generate(),

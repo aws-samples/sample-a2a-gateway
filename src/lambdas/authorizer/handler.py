@@ -146,6 +146,13 @@ def generate_policy(
     # Always allow GET /agents (registry endpoint) - it does its own filtering
     resources.append(f"{base_arn}/GET/agents")
     
+    # Always allow POST /search (search endpoint) - it does its own filtering
+    resources.append(f"{base_arn}/POST/search")
+    
+    # Allow admin endpoints if user has gateway:admin scope
+    if 'gateway:admin' in context.get('scopes', []):
+        resources.append(f"{base_arn}/*/admin/*")
+    
     # Add specific agent paths for each allowed agent
     for agent_id in allowed_agents:
         # Allow all methods and sub-paths for this agent

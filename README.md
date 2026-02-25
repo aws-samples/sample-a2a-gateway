@@ -39,6 +39,7 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 **Key Features**:
 - ✅ Fully A2A protocol compliant
 - ✅ Fine-grained access control via Cognito JWT scopes
+- ✅ Semantic search for agent discovery via S3 Vectors
 - ✅ SSE streaming support for `message:stream` operations
 - ✅ OAuth 2.0 Client Credentials flow for backend authentication
 - ✅ Serverless architecture (API Gateway + Lambda + DynamoDB)
@@ -59,6 +60,7 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 **Lambda Functions**
 - **Authorizer**: JWT validation, FGAC lookup in DynamoDB, generates IAM policies with agent-specific resource ARNs
 - **Registry**: Agent discovery with permission filtering (returns only agents user can access)
+- **Search**: Semantic agent discovery using S3 Vectors embeddings
 - **Proxy** (Container): Routes A2A requests to backends with OAuth authentication, supports real-time SSE streaming via FastAPI + Lambda Web Adapter
 - **Admin**: Agent registration and management (requires `gateway:admin` scope)
 
@@ -288,7 +290,38 @@ Example response:
 ]
 ```
 
-### 4. Get Agent Card
+### 4. Semantic Search for Agents
+
+Search for agents using natural language queries:
+
+```bash
+curl -X POST $GATEWAY_URL/search \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "calculator math arithmetic", "topK": 5}' | jq .
+```
+
+Example response:
+```json
+{
+  "results": [
+    {
+      "agentCard": {
+        "name": "Calculator Agent",
+        "description": "A calculator agent that can perform basic arithmetic operations.",
+        "url": "https://your-gateway.execute-api.us-east-1.amazonaws.com/v1/agents/bedrock-agent"
+      },
+      "score": 0.89
+    }
+  ],
+  "query": "calculator math arithmetic",
+  "totalMatches": 1
+}
+```
+
+The search uses Amazon Titan Text Embeddings V2 to generate vector embeddings stored in S3 Vectors. Results are filtered by user permissions - you only see agents you have access to.
+
+### 5. Get Agent Card
 
 Fetch a specific agent's capabilities:
 
@@ -297,7 +330,7 @@ curl $GATEWAY_URL/agents/bedrock-agent/.well-known/agent-card.json \
   -H "Authorization: Bearer $JWT" | jq .
 ```
 
-### 5. Send Messages to Agents
+### 6. Send Messages to Agents
 
 Send a message to an agent (buffered response):
 

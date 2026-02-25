@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from shared.dynamodb_client import create_client_from_env
 from shared.oauth_client import OAuthClient
+from shared.embedding_client import EmbeddingClient
+from shared.s3vectors_client import S3VectorsClient
 from shared.errors import (
     GatewayError, BadRequestError, AuthorizationError, BackendError,
     ADMIN_PERMISSION_REQUIRED, AGENT_NOT_FOUND, BACKEND_UNREACHABLE, OAUTH_ERROR
@@ -21,6 +23,58 @@ from shared.errors import (
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def get_vectors_client() -> S3VectorsClient:
+    """Get S3 Vectors client if configured."""
+    vector_bucket = os.environ.get('VECTOR_BUCKET_NAME')
+    vector_index = os.environ.get('VECTOR_INDEX_NAME')
+    
+    if vector_bucket and vector_index:
+        return S3VectorsClient(vector_bucket, vector_index)
+    return None
+
+
+def store_agent_embedding(agent_id: str, agent_card: dict, name: str) -> None:
+    """
+    Generate and store embedding for agent in S3 Vectors.
+    
+    Args:
+        agent_id: Agent identifier
+        agent_card: Agent card data
+        name: Agent name
+    """
+    vectors_client = get_vectors_client()
+    if not vectors_client:
+        logger.info("S3 Vectors not configured, skipping embedding storage")
+        return
+    
+    try:
+        embedding_client = EmbeddingClient()
+        
+        # Format agent card for embedding
+        text_to_embed = embedding_client.format_agent_for_embedding(agent_card)
+        logger.info(f"Generating embedding for: {text_to_embed[:100]}...")
+        
+        # Generate embedding
+        embedding = embedding_client.get_embedding(text_to_embed)
+        
+        # Store in S3 Vectors
+        vectors_client.put_vector(
+            key=agent_id,
+            embedding=embedding,
+            metadata={
+                "agentId": agent_id,
+                "name": name,
+                "sourceText": text_to_embed[:1000]  # Store truncated source for reference
+            }
+        )
+        
+        logger.info(f"Stored embedding for agent: {agent_id}")
+        
+    except Exception as e:
+        # Log but don't fail registration if embedding fails
+        logger.error(f"Failed to store embedding for {agent_id}: {e}")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -235,6 +289,9 @@ def handle_register(event: Dict[str, Any]) -> Dict[str, Any]:
     
     db_client.put_agent(agent_item)
     
+    # Generate and store embedding for semantic search
+    store_agent_embedding(agent_id, agent_card, name)
+    
     logger.info(f"Registered agent: {agent_id}")
     
     # Build gateway URL
@@ -311,6 +368,9 @@ def handle_sync(event: Dict[str, Any]) -> Dict[str, Any]:
     
     # Update cached Agent Card
     db_client.update_agent_card(agent_id, new_agent_card)
+    
+    # Update embedding for semantic search
+    store_agent_embedding(agent_id, new_agent_card, agent.get('name', agent_id))
     
     logger.info(f"Synced agent: {agent_id}")
     

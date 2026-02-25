@@ -58,3 +58,13 @@ variable "admin_lambda_invoke_arn" {
   description = "Invoke ARN of the Admin Lambda function"
   type        = string
 }
+
+variable "search_lambda_name" {
+  description = "Name of the Search Lambda function"
+  type        = string
+}
+
+variable "search_lambda_invoke_arn" {
+  description = "Invoke ARN of the Search Lambda function"
+  type        = string
+}

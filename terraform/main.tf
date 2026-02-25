@@ -15,6 +15,14 @@ module "cognito" {
   environment    = var.environment
 }
 
+# S3 Vectors for semantic search
+module "s3_vectors" {
+  source = "./modules/s3-vectors"
+
+  project_name = var.project_name
+  environment  = var.environment
+}
+
 # ECR Repository for Proxy Lambda container
 module "ecr" {
   source = "./modules/ecr"
@@ -77,6 +85,9 @@ module "lambda_functions" {
   cognito_client_id         = module.cognito.client_id
   gateway_domain            = "PLACEHOLDER"  # Will be updated by null_resource after API Gateway is created
   proxy_ecr_repository_url  = module.ecr.proxy_repository_url
+  vector_bucket_name        = module.s3_vectors.vector_bucket_name
+  vector_bucket_arn         = module.s3_vectors.vector_bucket_arn
+  vector_index_name         = module.s3_vectors.vector_index_name
 
   depends_on = [null_resource.build_proxy_container]
 }
@@ -98,6 +109,8 @@ module "api_gateway" {
   proxy_lambda_arn             = module.lambda_functions.proxy_lambda_arn
   admin_lambda_name            = module.lambda_functions.admin_lambda_name
   admin_lambda_invoke_arn      = module.lambda_functions.admin_lambda_invoke_arn
+  search_lambda_name           = module.lambda_functions.search_lambda_name
+  search_lambda_invoke_arn     = module.lambda_functions.search_lambda_invoke_arn
 }
 
 # Extract gateway domain (without https://)
@@ -126,14 +139,16 @@ resource "null_resource" "update_registry_lambda" {
 # Update Admin Lambda with gateway domain
 resource "null_resource" "update_admin_lambda" {
   triggers = {
-    gateway_domain = local.gateway_domain
+    gateway_domain     = local.gateway_domain
+    vector_bucket_name = module.s3_vectors.vector_bucket_name
+    vector_index_name  = module.s3_vectors.vector_index_name
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.admin_lambda_name} \
-        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},LOG_LEVEL=INFO}" \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }
@@ -152,6 +167,24 @@ resource "null_resource" "update_proxy_lambda" {
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.proxy_lambda_name} \
         --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},LOG_LEVEL=INFO}" \
+        --region ${var.aws_region}
+    EOT
+  }
+
+  depends_on = [module.api_gateway]
+}
+
+# Update Search Lambda with gateway domain
+resource "null_resource" "update_search_lambda" {
+  triggers = {
+    gateway_domain = local.gateway_domain
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws lambda update-function-configuration \
+        --function-name ${module.lambda_functions.search_lambda_name} \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }

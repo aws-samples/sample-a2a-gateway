@@ -435,7 +435,7 @@ def forward_to_bedrock_agentcore(
             json=jsonrpc_request,
             headers=backend_headers,
             stream=is_streaming,
-            timeout=900 if is_streaming else 30
+            timeout=900 if is_streaming else 300  # 15 min for streaming, 5 min for buffered
         )
         
         logger.info(f"Bedrock AgentCore response status: {response.status_code}")
@@ -491,7 +491,7 @@ def forward_request(
             headers=backend_headers,
             data=body.encode('utf-8') if body else None,
             stream=is_streaming,
-            timeout=900 if is_streaming else 30  # 15 min for streaming, 30s for buffered
+            timeout=900 if is_streaming else 300  # 15 min for streaming, 5 min for buffered
         )
         
         if is_streaming:

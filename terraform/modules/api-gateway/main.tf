@@ -75,6 +75,13 @@ resource "aws_api_gateway_resource" "agents_proxy" {
   path_part   = "{proxy+}"
 }
 
+# /search resource
+resource "aws_api_gateway_resource" "search" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "search"
+}
+
 # /admin resource
 resource "aws_api_gateway_resource" "admin" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -133,6 +140,24 @@ resource "aws_api_gateway_integration" "agents_get" {
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.registry_lambda_invoke_arn
+}
+
+# POST /search - Search Lambda (semantic agent discovery)
+resource "aws_api_gateway_method" "search_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.search.id
+  http_method   = "POST"
+  authorization = "CUSTOM"
+  authorizer_id = aws_api_gateway_authorizer.lambda.id
+}
+
+resource "aws_api_gateway_integration" "search_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.search.id
+  http_method             = aws_api_gateway_method.search_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.search_lambda_invoke_arn
 }
 
 # ANY /agents/{proxy+} - Proxy Lambda (with streaming support)
@@ -202,7 +227,7 @@ resource "aws_api_gateway_integration" "agents_proxy_any" {
   credentials = aws_iam_role.proxy_invocation.arn
   
   # Timeout
-  timeout_milliseconds = 29000
+  timeout_milliseconds = 300000
 
   lifecycle {
     ignore_changes = [uri]  # URI will be updated by null_resource for streaming
@@ -315,6 +340,14 @@ resource "aws_lambda_permission" "admin" {
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
 
+resource "aws_lambda_permission" "search" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.search_lambda_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
 # Deployment
 resource "aws_api_gateway_deployment" "main" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -323,10 +356,13 @@ resource "aws_api_gateway_deployment" "main" {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.agents.id,
       aws_api_gateway_resource.agents_proxy.id,
+      aws_api_gateway_resource.search.id,
       aws_api_gateway_method.agents_get.id,
       aws_api_gateway_method.agents_proxy_any.id,
+      aws_api_gateway_method.search_post.id,
       aws_api_gateway_integration.agents_get.id,
       aws_api_gateway_integration.agents_proxy_any.id,
+      aws_api_gateway_integration.search_post.id,
       aws_api_gateway_method.admin_register.id,
       aws_api_gateway_method.admin_sync.id,
       aws_api_gateway_method.admin_status.id,
@@ -341,6 +377,7 @@ resource "aws_api_gateway_deployment" "main" {
   depends_on = [
     aws_api_gateway_integration.agents_get,
     aws_api_gateway_integration.agents_proxy_any,
+    aws_api_gateway_integration.search_post,
     aws_api_gateway_integration.admin_register,
     aws_api_gateway_integration.admin_sync,
     aws_api_gateway_integration.admin_status,
