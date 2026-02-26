@@ -16,7 +16,7 @@ This gateway fills that gap by implementing all three layers:
 - Centralized agent registry with metadata and capabilities
 - Dynamic agent card caching and URL rewriting
 - Agent lifecycle management (register, sync, activate/deactivate)
-- Multi-backend support (standard A2A + Bedrock AgentCore)
+- Multi-backend support for standard A2A servers
 
 **Control Layer** - Fine-Grained Access Control (FGAC)
 - JWT-based authentication via Cognito
@@ -45,7 +45,6 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 - ✅ OAuth 2.0 Client Credentials flow for backend authentication
 - ✅ Serverless architecture (API Gateway + Lambda + DynamoDB)
 - ✅ Native support for AWS Bedrock AgentCore Runtime backends
-- ✅ Automatic protocol translation to JSON-RPC for all backends
 
 ## Architecture
 
@@ -95,25 +94,7 @@ The gateway automatically detects the protocol binding based on the request form
 
 ### Backend Support
 
-The gateway translates all inbound requests to JSON-RPC format for backend communication. This provides a consistent interface regardless of which protocol binding clients use.
-
-**AWS Bedrock AgentCore Runtime**
-
-The gateway provides native support for agents deployed on AWS Bedrock AgentCore Runtime. It automatically:
-
-1. **Protocol translation** - Converts to JSON-RPC format:
-   - `message:send` → `message/send` 
-   - `SendMessage` → `message/send`
-   - Wraps requests in JSON-RPC envelopes
-2. **Format transformation** - Adapts A2A conventions to Bedrock format:
-   - `ROLE_USER` → `user`
-   - `ROLE_AGENT` → `agent`
-3. **Session management** - Adds required `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` headers
-4. **Endpoint routing** - Routes all operations to `/invocations` endpoint
-
-**Standard A2A Servers**
-
-For non-Bedrock backends, the gateway forwards JSON-RPC formatted requests. Backends should implement JSON-RPC handlers for A2A operations.
+The gateway translates all inbound requests to JSON-RPC format for backend communication. This provides a consistent interface regardless of which protocol binding clients use. Backends should implement JSON-RPC handlers for A2A operations.
 
 ## Quick Start
 
@@ -242,32 +223,7 @@ curl -X POST $GATEWAY_URL/admin/agents/register \
   }'
 ```
 
-#### AWS Bedrock AgentCore Runtime
-
-```bash
-# URL-encode your agent ARN
-AGENT_ARN="arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/my-agent-xyz"
-ENCODED_ARN=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$AGENT_ARN', safe=''))")
-
-curl -X POST $GATEWAY_URL/admin/agents/register \
-  -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"agentId\": \"bedrock-agent\",
-    \"name\": \"Bedrock Calculator Agent\",
-    \"backendUrl\": \"https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/${ENCODED_ARN}/invocations\",
-    \"agentCardUrl\": \"https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/${ENCODED_ARN}/invocations/.well-known/agent-card.json\",
-    \"authConfig\": {
-      \"type\": \"oauth2_client_credentials\",
-      \"tokenUrl\": \"https://your-cognito-domain.auth.us-east-1.amazoncognito.com/oauth2/token\",
-      \"clientId\": \"your-bedrock-client-id\",
-      \"clientSecret\": \"your-bedrock-client-secret\",
-      \"scopes\": [\"your-resource-server/read\", \"your-resource-server/write\"]
-    }
-  }"
-```
-
-**Note**: The gateway automatically detects Bedrock AgentCore backends and handles protocol translation transparently.
+**Note**: For Bedrock AgentCore Runtime backends, ensure the agent ARN is URL-encoded in the `backendUrl`.
 
 ### 3. Discover Agents
 
@@ -479,25 +435,6 @@ curl -X POST $GATEWAY_URL/agents/bedrock-agent/message:send \
       "parts": [{"text": "Calculate the square root of 144"}]
     }
   }' | jq '.[].parts[].text' | tr -d '\n' && echo
-```
-
-## Running Tests
-
-```bash
-# Install dependencies
-pip install -r src/requirements.txt
-
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=src/lambdas --cov-report=html
-
-# Run only unit tests
-pytest tests/unit/ -v
-
-# Run only property tests
-pytest tests/property/ -v -m property_test
 ```
 
 ## Admin Operations
