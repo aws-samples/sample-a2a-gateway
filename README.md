@@ -105,6 +105,7 @@ The gateway translates all inbound requests to JSON-RPC format for backend commu
 - AWS CLI configured
 - Docker (container runtime for building proxy Lambda)
 - S3 bucket for Terraform state
+- API Gateway CloudWatch Logging role configured in your account (one-time per account per region — set under API Gateway **Settings → Logging** in the AWS Console)
 
 ### 1. Configure Terraform Backend (for remote tfstate)
 
@@ -175,6 +176,21 @@ python3 scripts/seed_permissions.py <permissions-table-name> us-east-1
 ```
 
 Get the table name from Terraform outputs: `terraform output permissions_table_name`
+
+### 6. (Optional) Private Deployment
+
+To deploy the gateway without internet-facing endpoints, enable private deployment mode. This creates a VPC with private subnets, VPC endpoints for all AWS services, attaches all Lambdas to the VPC, and switches API Gateway from `REGIONAL` to `PRIVATE`.
+
+Edit `terraform.tfvars`:
+```hcl
+enable_private_deployment = true
+vpc_cidr                  = "10.0.0.0/16"
+enable_bedrock_endpoint   = true  # required for semantic search and Bedrock AgentCore backends
+```
+
+Then re-run `terraform apply`. The API Gateway will only be accessible from within the VPC or via VPN/Direct Connect/Transit Gateway.
+
+**Note:** The integration timeout quota defaults to 29 seconds. For long-running agent calls, request an increase for "Maximum integration timeout in milliseconds" in the AWS Service Quotas console.
 
 ## Using the Gateway
 

@@ -71,6 +71,18 @@ resource "null_resource" "build_proxy_container" {
   depends_on = [module.ecr]
 }
 
+# ─── VPC (private deployment only) ──────────────────────────────────────────────
+
+module "vpc" {
+  count  = var.enable_private_deployment ? 1 : 0
+  source = "./modules/vpc"
+
+  project_name            = var.project_name
+  environment             = var.environment
+  vpc_cidr                = var.vpc_cidr
+  enable_bedrock_endpoint = var.enable_bedrock_endpoint
+}
+
 # Lambda Functions
 module "lambda_functions" {
   source = "./modules/lambda-functions"
@@ -90,6 +102,11 @@ module "lambda_functions" {
   vector_bucket_name        = module.s3_vectors.vector_bucket_name
   vector_bucket_arn         = module.s3_vectors.vector_bucket_arn
   vector_index_name         = module.s3_vectors.vector_index_name
+
+  # Private deployment — attach Lambdas to VPC
+  enable_vpc             = var.enable_private_deployment
+  vpc_subnet_ids         = var.enable_private_deployment ? module.vpc[0].private_subnet_ids : []
+  vpc_security_group_ids = var.enable_private_deployment ? [module.vpc[0].lambda_security_group_id] : []
 
   depends_on = [null_resource.build_proxy_container]
 }
@@ -113,6 +130,10 @@ module "api_gateway" {
   admin_lambda_invoke_arn      = module.lambda_functions.admin_lambda_invoke_arn
   search_lambda_name           = module.lambda_functions.search_lambda_name
   search_lambda_invoke_arn     = module.lambda_functions.search_lambda_invoke_arn
+
+  # Private deployment — switch to PRIVATE endpoint
+  enable_private_endpoint = var.enable_private_deployment
+  vpc_endpoint_id         = var.enable_private_deployment ? module.vpc[0].execute_api_vpc_endpoint_id : ""
 }
 
 # Extract gateway domain (without https://)

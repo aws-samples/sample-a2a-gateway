@@ -22,10 +22,10 @@ resource "aws_iam_role" "authorizer" {
   }
 }
 
-# Attach basic Lambda execution policy
+# Attach execution policy — VPC-aware when private deployment is enabled
 resource "aws_iam_role_policy_attachment" "authorizer_basic" {
   role       = aws_iam_role.authorizer.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  policy_arn = var.enable_vpc ? "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole" : "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 # DynamoDB read access for FGAC
@@ -75,6 +75,14 @@ resource "aws_lambda_function" "authorizer" {
 
   tags = {
     Name = "${var.project_name}-${var.environment}-authorizer"
+  }
+
+  dynamic "vpc_config" {
+    for_each = var.enable_vpc ? [1] : []
+    content {
+      subnet_ids         = var.vpc_subnet_ids
+      security_group_ids = var.vpc_security_group_ids
+    }
   }
 }
 

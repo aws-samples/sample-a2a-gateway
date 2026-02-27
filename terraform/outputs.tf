@@ -83,3 +83,19 @@ output "proxy_ecr_repository_name" {
   description = "Name of the Proxy Lambda ECR repository"
   value       = module.ecr.proxy_repository_name
 }
+
+# VPC Outputs (private deployment only)
+output "vpc_id" {
+  description = "ID of the VPC (only when enable_private_deployment is true)"
+  value       = var.enable_private_deployment ? module.vpc[0].vpc_id : null
+}
+
+output "private_subnet_ids" {
+  description = "IDs of the private subnets (only when enable_private_deployment is true)"
+  value       = var.enable_private_deployment ? module.vpc[0].private_subnet_ids : null
+}
+
+output "execute_api_vpc_endpoint_id" {
+  description = "ID of the execute-api VPC endpoint (only when enable_private_deployment is true)"
+  value       = var.enable_private_deployment ? module.vpc[0].execute_api_vpc_endpoint_id : null
+}

@@ -22,10 +22,10 @@ resource "aws_iam_role" "admin" {
   }
 }
 
-# Attach basic Lambda execution policy
+# Attach execution policy — VPC-aware when private deployment is enabled
 resource "aws_iam_role_policy_attachment" "admin_basic" {
   role       = aws_iam_role.admin.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  policy_arn = var.enable_vpc ? "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole" : "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 # DynamoDB, Secrets Manager, S3 Vectors, and Bedrock permissions for Admin Lambda
@@ -106,6 +106,14 @@ resource "aws_lambda_function" "admin" {
   # Ignore changes to environment variables since they're updated by null_resource
   lifecycle {
     ignore_changes = [environment]
+  }
+
+  dynamic "vpc_config" {
+    for_each = var.enable_vpc ? [1] : []
+    content {
+      subnet_ids         = var.vpc_subnet_ids
+      security_group_ids = var.vpc_security_group_ids
+    }
   }
 
   tags = {

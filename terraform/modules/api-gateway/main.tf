@@ -6,12 +6,42 @@ resource "aws_api_gateway_rest_api" "main" {
   description = "A2A Gateway REST API"
 
   endpoint_configuration {
-    types = ["REGIONAL"]
+    types            = var.enable_private_endpoint ? ["PRIVATE"] : ["REGIONAL"]
+    vpc_endpoint_ids = var.enable_private_endpoint ? [var.vpc_endpoint_id] : null
   }
 
   tags = {
     Name = "${var.project_name}-${var.environment}-api"
   }
+}
+
+# Resource policy for private API — required for PRIVATE endpoint type
+resource "aws_api_gateway_rest_api_policy" "private" {
+  count       = var.enable_private_endpoint ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.main.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "aws:sourceVpce" = var.vpc_endpoint_id
+          }
+        }
+      },
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*"
+      }
+    ]
+  })
 }
 
 # Lambda Authorizer

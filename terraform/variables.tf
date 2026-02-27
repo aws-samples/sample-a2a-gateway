@@ -27,3 +27,21 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_private_deployment" {
+  description = "Enable private deployment with VPC, private API Gateway, and Lambda VPC attachment"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC (only used when enable_private_deployment is true)"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "enable_bedrock_endpoint" {
+  description = "Create a VPC endpoint for Bedrock Runtime (only used when enable_private_deployment is true)"
+  type        = bool
+  default     = true
+}

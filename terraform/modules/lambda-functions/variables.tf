@@ -75,3 +75,23 @@ variable "vector_index_name" {
   type        = string
   default     = ""
 }
+
+# ─── Private deployment variables ──────────────────────────────────────────────
+
+variable "enable_vpc" {
+  description = "Attach Lambda functions to a VPC"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_subnet_ids" {
+  description = "Subnet IDs for Lambda VPC config"
+  type        = list(string)
+  default     = []
+}
+
+variable "vpc_security_group_ids" {
+  description = "Security group IDs for Lambda VPC config"
+  type        = list(string)
+  default     = []
+}

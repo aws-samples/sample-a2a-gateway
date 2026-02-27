@@ -8,3 +8,11 @@ tags = {
   Owner = "your-name"
   Team  = "your-team"
 }
+
+# ─── Private Deployment (uncomment to enable) ──────────────────────────────────
+# Deploys a VPC with private subnets, VPC endpoints, attaches Lambdas to the VPC,
+# and switches API Gateway from REGIONAL (public) to PRIVATE (VPC-only access).
+#
+# enable_private_deployment = true
+# vpc_cidr                  = "10.0.0.0/16"
+# enable_bedrock_endpoint   = true

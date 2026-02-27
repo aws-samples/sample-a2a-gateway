@@ -68,3 +68,17 @@ variable "search_lambda_invoke_arn" {
   description = "Invoke ARN of the Search Lambda function"
   type        = string
 }
+
+# ─── Private deployment variables ──────────────────────────────────────────────
+
+variable "enable_private_endpoint" {
+  description = "Use PRIVATE endpoint type instead of REGIONAL"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_endpoint_id" {
+  description = "VPC endpoint ID for execute-api (required when enable_private_endpoint is true)"
+  type        = string
+  default     = ""
+}
