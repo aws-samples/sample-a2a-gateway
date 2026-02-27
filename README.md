@@ -520,9 +520,12 @@ aws dynamodb get-item \
     /ecr            - Container registry for proxy Lambda
     /lambda-functions - All Lambdas
     /api-gateway    - REST API with streaming support
+    /vpc            - VPC with private subnets and VPC endpoints (private deployment)
+    /s3-vectors     - S3 Vectors bucket and index for semantic search
 /src/lambdas
   /authorizer       - JWT validation
   /registry         - Agent discovery
+  /search           - Semantic agent discovery via S3 Vectors
   /proxy_container  - A2A routing with streaming (FastAPI + Lambda Web Adapter)
   /admin            - Agent management
   /shared           - Common utilities
@@ -530,6 +533,7 @@ aws dynamodb get-item \
   /unit             - Unit tests
   /property         - Property-based tests
 /scripts            - Helper scripts
+/diagrams           - Architecture diagrams
 ```
 
 ## Security Considerations
@@ -576,6 +580,24 @@ The gateway proxies A2A messages without modification.
 ### API Gateway Timeout
 
 API Gateway REST API has a default 29-second integration timeout. This gateway configures 300 seconds, but you must request a quota increase from AWS Support first. Go to AWS Service Quotas console and request an increase for "Amazon API Gateway - REST API integration timeout".
+
+### VPC Security Group Configuration (Private Deployment)
+
+When private deployment is enabled, Lambda functions are attached to a VPC with security groups that restrict egress to HTTPS (port 443) only. The security group must include egress rules for both:
+
+- The VPC CIDR (for Interface VPC endpoints like Secrets Manager, CloudWatch Logs, etc.)
+- DynamoDB and S3 prefix lists (for Gateway VPC endpoints, which route to public IP ranges outside the VPC CIDR)
+
+Without the prefix list egress rules, Lambda functions will timeout when attempting to reach DynamoDB or S3 through Gateway endpoints. This is a common VPC networking pitfall — Gateway endpoints use route tables (not ENIs inside the VPC), so their destination IPs fall outside the VPC CIDR block.
+
+### VPC Block Public Access
+
+[VPC Block Public Access (BPA)](https://docs.aws.amazon.com/vpc/latest/userguide/security-vpc-bpa.html) is an account-level setting that blocks traffic through internet gateways across all VPCs in a region. This gateway does not enable BPA because:
+
+- BPA is account-scoped, not per-VPC — enabling it could impact other workloads in the account
+- The private deployment already has no internet gateway, so BPA provides no additional protection for this gateway
+
+- **Production recommendation**: Enable VPC BPA at the account or organization level as a defense-in-depth measure. Use the AWS Console (VPC → Settings → Block Public Access) or the `aws ec2 modify-vpc-block-public-access-options` CLI command. If other workloads in the account require internet access, use BPA exclusions for those specific VPCs.
 
 ## Clean Up
 
