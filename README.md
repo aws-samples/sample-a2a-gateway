@@ -1,14 +1,14 @@
 # A2A Gateway
 
-by Reilly Manton, Wesley Petry, Scott Wainner
+by Reilly Manton, Wesley Petry, Scott Wainner, Gabriel Fuentes
 
 A serverless A2A gateway that provides the complete three-layer architecture required for enterprise agent deployments: management, control, and data layers.
 
 ## Why This Matters
 
-Amazon Bedrock AgentCore provides a complete gateway solution for MCP (Model Context Protocol) with management, access control, and data proxying. However, AgentCore has no native support for A2A (Agent-to-Agent) protocol. Existing A2A solutions only implement a management layer (agent discovery/registry) but lack the control and data layers, rendering them ineffective for corporate environments where security, access control, and centralized routing are critical.
+Amazon Bedrock AgentCore provides a complete gateway solution for MCP (Model Context Protocol) with management, access control, and data proxying. However, AgentCore has no native A2A (Agent-to-Agent) protocol gateway. While AgentCore Runtime can host A2A servers with OAuth 2.0 authentication, it does not provide the management, control, and data layers needed to operate multiple A2A agents behind a single domain. Existing A2A solutions only implement a management layer (agent discovery/registry) but lack the control and data layers, rendering them ineffective for corporate environments where security, access control, and centralized routing are critical.
 
-This gateway fills that gap by implementing all three layers:
+This gateway fills that gap by implementing all three layers, using OAuth 2.0 client credentials flow for backend authentication — the same auth model that A2A and AgentCore Runtime use natively:
 
 ### The Three-Layer Architecture
 
@@ -181,6 +181,8 @@ Get the table name from Terraform outputs: `terraform output permissions_table_n
 
 To deploy the gateway without internet-facing endpoints, enable private deployment mode. This creates a VPC with private subnets, VPC endpoints for all AWS services, attaches all Lambdas to the VPC, and switches API Gateway from `REGIONAL` to `PRIVATE`.
 
+**What "private deployment" means**: This mode makes the gateway's own infrastructure private — the API Gateway endpoint is only reachable from within the VPC (or via VPN/Direct Connect/Transit Gateway), and all Lambda functions run inside private subnets. It does **not** provide a fully air-gapped environment. Outbound internet connectivity is still required for OAuth token exchange with backend agents (see below). In enterprise environments, this private gateway would typically sit within an existing VPC architecture that already provides managed egress through NAT Gateways, Transit Gateways, or similar. This sample provisions the VPC and VPC endpoints but leaves the outbound connectivity path to the deployer, since it depends on your network topology.
+
 Edit `terraform.tfvars`:
 ```hcl
 enable_private_deployment = true
@@ -189,6 +191,13 @@ enable_bedrock_endpoint   = true  # required for semantic search and Bedrock Age
 ```
 
 Then re-run `terraform apply`. The API Gateway will only be accessible from within the VPC or via VPN/Direct Connect/Transit Gateway.
+
+**Outbound Connectivity Requirement**: The Proxy Lambda performs OAuth 2.0 client credentials flow to authenticate with backend agents. Cognito's OAuth token endpoint (`/oauth2/token`) is hosted on a public domain and [is not accessible via AWS PrivateLink](https://docs.aws.amazon.com/cognito/latest/developerguide/vpc-interface-endpoints.html). Your private VPC must have outbound internet connectivity for this token exchange. In enterprise environments, this is typically provided by:
+- A **NAT Gateway** in a public subnet
+- A **Transit Gateway** routing to a shared egress VPC
+- **AWS Direct Connect** or **VPN** with internet breakout
+
+This applies to any external OAuth provider, not just Cognito. The gateway's VPC endpoints handle all AWS service traffic (DynamoDB, S3, Secrets Manager, etc.) privately — only the OAuth token exchange requires outbound connectivity.
 
 **Note:** The integration timeout quota defaults to 29 seconds. For long-running agent calls, request an increase for "Maximum integration timeout in milliseconds" in the AWS Service Quotas console.
 
@@ -239,7 +248,7 @@ curl -X POST $GATEWAY_URL/admin/agents/register \
   }'
 ```
 
-**Note**: For Bedrock AgentCore Runtime backends, ensure the agent ARN is URL-encoded in the `backendUrl`.
+**Note**: For Bedrock AgentCore Runtime backends, ensure the agent ARN is URL-encoded in the `backendUrl`. The AgentCore agent must be deployed with OAuth authentication using the `customJWTAuthorizer` — configure it with `allowedClients` (not `allowedAudience`) set to your Cognito client ID. This is required because Cognito client_credentials tokens include a `client_id` claim but not the standard `aud` claim that `allowedAudience` validates against. See the [AgentCore A2A protocol contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-a2a-protocol-contract.html) and [Deploy A2A servers in AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-a2a.html) for deployment details.
 
 ### 3. Discover Agents
 
