@@ -5,7 +5,7 @@ boto3>=1.38.0
 python-jose[cryptography]==3.3.0
 
 # HTTP requests
-requests==2.31.0
+requests==2.32.4
 
 # Testing
 pytest==8.0.0
