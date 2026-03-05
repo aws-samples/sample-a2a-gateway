@@ -1,0 +1,21 @@
+# ============================================================================
+# AgentCore A2A Sample Agents — Configuration
+# ============================================================================
+# Copy this file to terraform.tfvars and customize:
+#   cp terraform.tfvars.example terraform.tfvars
+
+aws_region            = "us-east-1"
+stack_name            = "agentcore-a2a-sample"
+environment           = "dev"
+weather_agent_name    = "WeatherAgent"
+calculator_agent_name = "CalculatorAgent"
+network_mode          = "PUBLIC"
+ecr_repository_name   = "a2a-agents"
+image_tag             = "latest"
+
+# Notes:
+# - A Cognito User Pool is created automatically with OAuth client_credentials flow
+# - Both agent runtimes are configured with customJWTAuthorizer pointing to Cognito
+# - The gateway can authenticate using the client_id/client_secret from outputs
+# - OAuth scopes: a2a-gateway/weather:read, weather:write, calculator:read, calculator:write, gateway:admin
+# - After deploy, run `terraform output cognito_client_secret` to get the client secret
