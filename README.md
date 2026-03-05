@@ -618,6 +618,12 @@ Without the prefix list egress rules, Lambda functions will timeout when attempt
 
 - **Production recommendation**: Enable VPC BPA at the account or organization level as a defense-in-depth measure. Use the AWS Console (VPC → Settings → Block Public Access) or the `aws ec2 modify-vpc-block-public-access-options` CLI command. If other workloads in the account require internet access, use BPA exclusions for those specific VPCs.
 
+## Test with Example Agents
+
+Ready-to-deploy sample agents are included to test the full gateway flow end-to-end. The example deploys two A2A-compliant agents (Weather and Calculator) to Amazon Bedrock AgentCore Runtime with Cognito OAuth authentication, all managed by Terraform.
+
+See the full walkthrough: [AgentCore A2A Example Agents](examples/README.md)
+
 ## Clean Up
 
 ```bash

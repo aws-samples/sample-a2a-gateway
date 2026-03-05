@@ -1,0 +1,5 @@
+strands-agents[a2a]
+boto3>=1.40.0
+botocore>=1.40.0
+fastapi
+uvicorn

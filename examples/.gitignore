@@ -1,0 +1,30 @@
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+!terraform/terraform.tfvars.example
+terraform/crash.log
+terraform/override.tf
+terraform/override.tf.json
+terraform/*_override.tf
+terraform/*_override.tf.json
+
+# Container build artifacts
+terraform/.terraform/*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Secrets and credentials
+.env
+*.pem
+*.key
+
+# OS
+.DS_Store
