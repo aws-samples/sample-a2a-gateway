@@ -257,7 +257,7 @@ resource "aws_api_gateway_integration" "agents_proxy_any" {
   credentials = aws_iam_role.proxy_invocation.arn
   
   # Timeout
-  timeout_milliseconds = 29000
+  timeout_milliseconds = 300000
 
   lifecycle {
     ignore_changes = [uri]  # URI will be updated by null_resource for streaming
