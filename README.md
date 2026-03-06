@@ -181,9 +181,13 @@ Get the table name from Terraform outputs: `terraform output permissions_table_n
 
 ### 6. (Optional) Private Deployment
 
-To deploy the gateway without internet-facing endpoints, enable private deployment mode. This creates a VPC with private subnets, VPC endpoints for all AWS services, attaches all Lambdas to the VPC, and switches API Gateway from `REGIONAL` to `PRIVATE`.
+To deploy the gateway without internet-facing endpoints, enable private deployment mode. This attaches all Lambdas to a VPC, creates VPC endpoints for all AWS services, and switches API Gateway from `REGIONAL` to `PRIVATE`.
 
-**What "private deployment" means**: This mode makes the gateway's own infrastructure private — the API Gateway endpoint is only reachable from within the VPC (or via VPN/Direct Connect/Transit Gateway), and all Lambda functions run inside private subnets. It does **not** provide a fully air-gapped environment. Outbound internet connectivity is still required for OAuth token exchange with backend agents (see below). In enterprise environments, this private gateway would typically sit within an existing VPC architecture that already provides managed egress through NAT Gateways, Transit Gateways, or similar. This sample provisions the VPC and VPC endpoints but leaves the outbound connectivity path to the deployer, since it depends on your network topology.
+**What "private deployment" means**: This mode makes the gateway's own infrastructure private — the API Gateway endpoint is only reachable from within the VPC (or via VPN/Direct Connect/Transit Gateway), and all Lambda functions run inside private subnets. It does **not** provide a fully air-gapped environment. Outbound internet connectivity is still required for OAuth token exchange with backend agents (see below). In enterprise environments, this private gateway would typically sit within an existing VPC architecture that already provides managed egress through NAT Gateways, Transit Gateways, or similar. This sample provisions the VPC endpoints but leaves the outbound connectivity path to the deployer, since it depends on your network topology.
+
+You have two options: let the gateway create a new VPC, or bring your own.
+
+#### Option A: Let the gateway create a VPC
 
 Edit `terraform.tfvars`:
 ```hcl
@@ -191,6 +195,30 @@ enable_private_deployment = true
 vpc_cidr                  = "10.0.0.0/16"
 enable_bedrock_endpoint   = true  # required for semantic search and Bedrock AgentCore backends
 ```
+
+#### Option B: Bring Your Own VPC (BYOVPC)
+
+Deploy into an existing VPC that you manage. The gateway creates only VPC endpoints and attaches Lambdas to your subnets — it does not create or modify your VPC, subnets, route tables, or security groups.
+
+Edit `terraform.tfvars`:
+```hcl
+enable_private_deployment              = true
+existing_vpc_id                        = "vpc-0123456789abcdef0"
+existing_subnet_ids                    = ["subnet-aaa", "subnet-bbb"]
+existing_route_table_ids               = ["rtb-aaa"]
+existing_lambda_security_group_id      = "sg-lambda"
+existing_vpc_endpoint_security_group_id = "sg-vpce"
+enable_bedrock_endpoint                = true
+```
+
+**BYOVPC requirements:**
+- **Subnets**: At least 2 private subnets in different AZs (for Interface VPC endpoint high availability)
+- **Lambda security group**: Must allow egress on port 443 to the VPC CIDR (for Interface endpoints) and to `0.0.0.0/0` or the DynamoDB/S3 prefix lists (for Gateway endpoints)
+- **VPC endpoint security group**: Must allow ingress on port 443 from the Lambda security group and from the VPC CIDR
+- **Route tables**: The route table(s) associated with your private subnets (needed for DynamoDB and S3 Gateway endpoints)
+- **DNS**: The VPC must have `enableDnsSupport` and `enableDnsHostnames` set to `true` (required for Interface VPC endpoint private DNS)
+
+**What gets created in your VPC**: 9 VPC endpoints (DynamoDB, S3, Secrets Manager, execute-api, CloudWatch Logs, ECR API, ECR DKR, S3 Vectors, and optionally Bedrock Runtime). On `terraform destroy`, all gateway resources including these endpoints are removed — your VPC, subnets, route tables, and security groups are never touched.
 
 Then re-run `terraform apply`. The API Gateway will only be accessible from within the VPC or via VPN/Direct Connect/Transit Gateway.
 
@@ -531,7 +559,8 @@ aws dynamodb get-item \
     /ecr            - Container registry for proxy Lambda
     /lambda-functions - All Lambdas
     /api-gateway    - REST API with streaming support
-    /vpc            - VPC with private subnets and VPC endpoints (private deployment)
+    /vpc            - VPC with private subnets and security groups (private deployment)
+    /vpc-endpoints  - VPC endpoints for AWS services (standalone, supports BYOVPC)
     /s3-vectors     - S3 Vectors bucket and index for semantic search
 /src/lambdas
   /authorizer       - JWT validation
@@ -602,12 +631,16 @@ API Gateway REST API has a default 29-second integration timeout. This gateway c
 
 ### VPC Security Group Configuration (Private Deployment)
 
-When private deployment is enabled, Lambda functions are attached to a VPC with security groups that restrict egress to HTTPS (port 443) only. The security group must include egress rules for both:
+When private deployment is enabled, Lambda functions are attached to a VPC with security groups that restrict egress to HTTPS (port 443) only.
+
+**When the gateway creates the VPC (Option A):** The gateway automatically creates both security groups and configures the prefix list egress rules for DynamoDB and S3 Gateway endpoints.
+
+**When you bring your own VPC (Option B):** You are responsible for configuring security group rules. The Lambda security group must include egress rules for both:
 
 - The VPC CIDR (for Interface VPC endpoints like Secrets Manager, CloudWatch Logs, etc.)
 - DynamoDB and S3 prefix lists (for Gateway VPC endpoints, which route to public IP ranges outside the VPC CIDR)
 
-Without the prefix list egress rules, Lambda functions will timeout when attempting to reach DynamoDB or S3 through Gateway endpoints. This is a common VPC networking pitfall — Gateway endpoints use route tables (not ENIs inside the VPC), so their destination IPs fall outside the VPC CIDR block.
+Without the prefix list egress rules, Lambda functions will timeout when attempting to reach DynamoDB or S3 through Gateway endpoints. This is a common VPC networking pitfall — Gateway endpoints use route tables (not ENIs inside the VPC), so their destination IPs fall outside the VPC CIDR block. Alternatively, allowing egress to `0.0.0.0/0` on port 443 covers both cases.
 
 ### VPC Block Public Access
 

@@ -1,6 +1,7 @@
 # VPC for private A2A Gateway deployment
-
-data "aws_region" "current" {}
+# Following terraform-aws-modules/vpc pattern: this module only creates
+# VPC, subnets, route tables, and security groups. VPC endpoints are a
+# separate module (modules/vpc-endpoints) per the composition pattern.
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -58,28 +59,13 @@ resource "aws_security_group" "lambda" {
   vpc_id      = aws_vpc.main.id
   description = "Security group for Lambda functions"
 
+  # Egress to VPC CIDR for Interface VPC endpoints
   egress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
     description = "HTTPS to VPC endpoints and private backends"
-  }
-
-  egress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    prefix_list_ids = [aws_vpc_endpoint.dynamodb.prefix_list_id]
-    description     = "HTTPS to DynamoDB via Gateway endpoint"
-  }
-
-  egress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
-    description     = "HTTPS to S3 via Gateway endpoint"
   }
 
   tags = {
@@ -104,8 +90,6 @@ resource "aws_security_group" "vpc_endpoints" {
     description     = "HTTPS from Lambda functions"
   }
 
-  # Also allow inbound from the full VPC CIDR so that non-Lambda clients
-  # (EC2, ECS, VPN) within the VPC can reach the private API Gateway endpoint
   ingress {
     from_port   = 443
     to_port     = 443
@@ -120,123 +104,5 @@ resource "aws_security_group" "vpc_endpoints" {
 
   lifecycle {
     create_before_destroy = true
-  }
-}
-
-# ─── Gateway Endpoints (free) ──────────────────────────────────────────────────
-
-resource "aws_vpc_endpoint" "dynamodb" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.private.id]
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-dynamodb-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.private.id]
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-s3-vpce"
-  }
-}
-
-# ─── Interface Endpoints ───────────────────────────────────────────────────────
-
-resource "aws_vpc_endpoint" "secretsmanager" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-secretsmanager-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "execute_api" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.execute-api"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-execute-api-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "logs" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.logs"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-logs-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "ecr_api" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.ecr.api"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-ecr-api-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "ecr_dkr" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.ecr.dkr"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-ecr-dkr-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "bedrock_runtime" {
-  count               = var.enable_bedrock_endpoint ? 1 : 0
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.bedrock-runtime"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-bedrock-runtime-vpce"
-  }
-}
-
-resource "aws_vpc_endpoint" "s3vectors" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.s3vectors"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-s3vectors-vpce"
   }
 }

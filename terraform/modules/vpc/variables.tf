@@ -13,9 +13,3 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
-
-variable "enable_bedrock_endpoint" {
-  description = "Create a VPC endpoint for Bedrock Runtime (for AgentCore backends)"
-  type        = bool
-  default     = true
-}
