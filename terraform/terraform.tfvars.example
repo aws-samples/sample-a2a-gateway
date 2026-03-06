@@ -16,3 +16,15 @@ tags = {
 # enable_private_deployment = true
 # vpc_cidr                  = "10.0.0.0/16"
 # enable_bedrock_endpoint   = true
+
+# ─── Bring Your Own VPC (uncomment instead of vpc_cidr to use an existing VPC) ─
+# When these are set, the gateway skips VPC/subnet/SG creation and deploys
+# endpoints + Lambdas into your existing infrastructure.
+#
+# enable_private_deployment              = true
+# existing_vpc_id                        = "vpc-0123456789abcdef0"
+# existing_subnet_ids                    = ["subnet-aaa", "subnet-bbb", "subnet-ccc"]
+# existing_route_table_ids               = ["rtb-aaa"]
+# existing_lambda_security_group_id      = "sg-aaa"
+# existing_vpc_endpoint_security_group_id = "sg-bbb"
+# enable_bedrock_endpoint                = true

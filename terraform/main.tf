@@ -72,16 +72,71 @@ resource "null_resource" "build_proxy_container" {
   depends_on = [module.ecr]
 }
 
-# ─── VPC (private deployment only) ──────────────────────────────────────────────
+# ─── VPC (composition pattern) ──────────────────────────────────────────────────
+# Following terraform-aws-modules/vpc pattern:
+#   - modules/vpc creates VPC + subnets + SGs (skipped when BYOVPC)
+#   - modules/vpc-endpoints creates all VPC endpoints (always runs)
+# This separation lets users bring their own VPC while the gateway still
+# provisions the endpoints it needs.
+
+locals {
+  create_vpc = var.enable_private_deployment && var.existing_vpc_id == ""
+  use_byovpc = var.enable_private_deployment && var.existing_vpc_id != ""
+
+  # Resolve VPC resource IDs from either the VPC module or user-provided values
+  vpc_id             = local.create_vpc ? module.vpc[0].vpc_id : var.existing_vpc_id
+  subnet_ids         = local.create_vpc ? module.vpc[0].private_subnet_ids : var.existing_subnet_ids
+  route_table_ids    = local.create_vpc ? [module.vpc[0].private_route_table_id] : var.existing_route_table_ids
+  lambda_sg_id       = local.create_vpc ? module.vpc[0].lambda_security_group_id : var.existing_lambda_security_group_id
+  vpce_sg_id         = local.create_vpc ? module.vpc[0].vpc_endpoint_security_group_id : var.existing_vpc_endpoint_security_group_id
+}
 
 module "vpc" {
-  count  = var.enable_private_deployment ? 1 : 0
+  count  = local.create_vpc ? 1 : 0
   source = "./modules/vpc"
 
-  project_name            = var.project_name
-  environment             = var.environment
-  vpc_cidr                = var.vpc_cidr
+  project_name = var.project_name
+  environment  = var.environment
+  vpc_cidr     = var.vpc_cidr
+}
+
+module "vpc_endpoints" {
+  count  = var.enable_private_deployment ? 1 : 0
+  source = "./modules/vpc-endpoints"
+
+  vpc_id              = local.vpc_id
+  subnet_ids          = local.subnet_ids
+  route_table_ids     = local.route_table_ids
+  security_group_ids  = [local.vpce_sg_id]
+  project_name        = var.project_name
+  environment         = var.environment
   enable_bedrock_endpoint = var.enable_bedrock_endpoint
+
+  depends_on = [module.vpc]
+}
+
+# Add Gateway endpoint prefix list egress rules to the Lambda SG (only when we
+# created the VPC — BYOVPC users manage their own SG rules)
+resource "aws_security_group_rule" "lambda_to_dynamodb" {
+  count             = local.create_vpc ? 1 : 0
+  type              = "egress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  prefix_list_ids   = [module.vpc_endpoints[0].dynamodb_endpoint_prefix_list_id]
+  security_group_id = local.lambda_sg_id
+  description       = "HTTPS to DynamoDB via Gateway endpoint"
+}
+
+resource "aws_security_group_rule" "lambda_to_s3" {
+  count             = local.create_vpc ? 1 : 0
+  type              = "egress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  prefix_list_ids   = [module.vpc_endpoints[0].s3_endpoint_prefix_list_id]
+  security_group_id = local.lambda_sg_id
+  description       = "HTTPS to S3 via Gateway endpoint"
 }
 
 # Lambda Functions
@@ -108,8 +163,8 @@ module "lambda_functions" {
 
   # Private deployment — attach Lambdas to VPC
   enable_vpc             = var.enable_private_deployment
-  vpc_subnet_ids         = var.enable_private_deployment ? module.vpc[0].private_subnet_ids : []
-  vpc_security_group_ids = var.enable_private_deployment ? [module.vpc[0].lambda_security_group_id] : []
+  vpc_subnet_ids         = var.enable_private_deployment ? local.subnet_ids : []
+  vpc_security_group_ids = var.enable_private_deployment ? [local.lambda_sg_id] : []
 
   depends_on = [null_resource.build_proxy_container]
 }
@@ -136,7 +191,7 @@ module "api_gateway" {
 
   # Private deployment — switch to PRIVATE endpoint
   enable_private_endpoint = var.enable_private_deployment
-  vpc_endpoint_id         = var.enable_private_deployment ? module.vpc[0].execute_api_vpc_endpoint_id : ""
+  vpc_endpoint_id         = var.enable_private_deployment ? module.vpc_endpoints[0].execute_api_vpc_endpoint_id : ""
 }
 
 # Extract gateway domain (without https://)
