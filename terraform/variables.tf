@@ -79,3 +79,29 @@ variable "existing_vpc_endpoint_security_group_id" {
   type        = string
   default     = ""
 }
+
+# ─── Observability ──────────────────────────────────────────────────────────────
+
+variable "enable_observability" {
+  description = "Enable CloudWatch dashboard and alarms for gateway monitoring"
+  type        = bool
+  default     = true
+}
+
+variable "enable_metrics" {
+  description = "Enable CloudWatch metrics emission from Lambda functions (via EMF)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_alarms_sns" {
+  description = "Enable SNS topic for alarm notifications"
+  type        = bool
+  default     = false
+}
+
+variable "alarm_email" {
+  description = "Email address for alarm notifications (only used if enable_alarms_sns is true)"
+  type        = string
+  default     = ""
+}

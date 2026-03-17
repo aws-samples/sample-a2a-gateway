@@ -99,3 +99,15 @@ output "execute_api_vpc_endpoint_id" {
   description = "ID of the execute-api VPC endpoint (null when private deployment is disabled)"
   value       = var.enable_private_deployment ? module.vpc_endpoints[0].execute_api_vpc_endpoint_id : null
 }
+
+
+# Observability Outputs
+output "dashboard_url" {
+  description = "URL to the CloudWatch dashboard (null when observability is disabled)"
+  value       = var.enable_observability ? module.observability[0].dashboard_url : null
+}
+
+output "alarms_sns_topic_arn" {
+  description = "ARN of the SNS topic for alarm notifications (null when SNS is disabled)"
+  value       = var.enable_observability && var.enable_alarms_sns ? module.observability[0].sns_topic_arn : null
+}

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.dynamodb_client import create_client_from_env
 from shared.url_rewriter import rewrite_agent_card_urls
 from shared.errors import GatewayError
+from shared.observability import emit_metric, log_info, log_error
 
 # Configure logging
 logger = logging.getLogger()
@@ -59,6 +60,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         ]
         
         logger.info(f"Returning {len(accessible_agents)} accessible agents")
+        
+        # Emit discovery metric
+        emit_metric("AgentDiscoveryCount", 1, "Count")
         
         # Build Agent Card array with URL rewriting
         agent_cards = []

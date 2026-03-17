@@ -28,3 +28,16 @@ tags = {
 # existing_lambda_security_group_id      = "sg-aaa"
 # existing_vpc_endpoint_security_group_id = "sg-bbb"
 # enable_bedrock_endpoint                = true
+
+# ─── Observability (enabled by default) ────────────────────────────────────────
+# Creates CloudWatch dashboard and alarms for monitoring the gateway.
+# Metrics are emitted by Lambda functions using EMF (Embedded Metric Format).
+#
+# enable_observability = true
+# enable_metrics       = true
+
+# ─── Alarm Notifications (optional) ────────────────────────────────────────────
+# Enable SNS topic for alarm notifications. Requires an email address.
+#
+# enable_alarms_sns = true
+# alarm_email       = "your-email@example.com"

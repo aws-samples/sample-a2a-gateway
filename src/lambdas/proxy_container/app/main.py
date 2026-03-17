@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import logging
+import time
 from typing import Dict, Any, Optional, AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -30,10 +31,13 @@ from shared.errors import (
     INVALID_PATH_FORMAT, AGENT_NOT_FOUND,
     BACKEND_UNREACHABLE, OAUTH_ERROR, STREAM_IDLE_TIMEOUT
 )
+from shared.observability import (
+    StructuredLogger, MetricsRecorder, emit_metric
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = StructuredLogger(__name__)
 
 # Headers to exclude when forwarding
 EXCLUDED_HEADERS = {
@@ -85,6 +89,69 @@ app = FastAPI(
     description="Proxy for A2A protocol with streaming support",
     lifespan=lifespan
 )
+
+
+# ─── Observability Middleware ───────────────────────────────────────────────────
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """Track request metrics and emit to CloudWatch via EMF."""
+    start_time = time.time()
+    
+    # Extract agent_id and operation from path
+    path_parts = request.url.path.strip('/').split('/')
+    agent_id = path_parts[1] if len(path_parts) > 1 and path_parts[0] == 'agents' else None
+    operation = '/'.join(path_parts[2:]) if len(path_parts) > 2 else None
+    
+    # Skip metrics for health checks
+    if request.url.path == '/health':
+        return await call_next(request)
+    
+    # Store start time in request state for use by handlers
+    request.state.start_time = start_time
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Calculate latency
+    latency_ms = (time.time() - start_time) * 1000
+    is_streaming = 'message:stream' in (operation or '') or getattr(request.state, 'is_streaming', False)
+    is_error = response.status_code >= 400
+    
+    # Emit metrics by agent (single dimension: AgentId)
+    if agent_id:
+        by_agent = MetricsRecorder()
+        by_agent.set_dimensions(AgentId=agent_id)
+        by_agent.record("RequestCount", 1, "Count")
+        by_agent.record("RequestLatency", latency_ms, "Milliseconds")
+        if is_error:
+            by_agent.record("ErrorCount", 1, "Count")
+        if is_streaming:
+            by_agent.record("StreamingRequests", 1, "Count")
+            by_agent.record("StreamDuration", latency_ms / 1000, "Seconds")
+        by_agent.flush()
+    
+    # Emit metrics by operation (single dimension: Operation)
+    if operation:
+        by_op = MetricsRecorder()
+        by_op.set_dimensions(Operation=operation)
+        by_op.record("RequestCount", 1, "Count")
+        by_op.record("RequestLatency", latency_ms, "Milliseconds")
+        if is_error:
+            by_op.record("ErrorCount", 1, "Count")
+        by_op.flush()
+    
+    # Log request completion
+    logger.info(
+        f"Request completed: {response.status_code}",
+        agentId=agent_id,
+        operation=operation,
+        statusCode=response.status_code,
+        latencyMs=round(latency_ms, 2),
+        isStreaming=is_streaming
+    )
+    
+    return response
 
 
 class UserContext:
@@ -142,13 +209,14 @@ def is_streaming_operation(operation: str) -> bool:
     return 'message:stream' in operation
 
 
-def check_rate_limit(user_context: UserContext, agent_id: str) -> None:
+def check_rate_limit(user_context: UserContext, agent_id: str, request: Request = None) -> None:
     """
     Check rate limit for user and agent, raise HTTPException if exceeded.
     
     Args:
         user_context: User context with rate limit info
         agent_id: Agent being accessed
+        request: FastAPI request (for metrics)
         
     Raises:
         HTTPException: If rate limit exceeded (429)
@@ -175,6 +243,25 @@ def check_rate_limit(user_context: UserContext, agent_id: str) -> None:
     )
     
     if not allowed:
+        # Emit rate limit metrics.
+        # The UserId emit keeps its dimensionless copy (used by the
+        # rate_limit_exhaustion alarm). The AgentId emit suppresses
+        # dimensionless to avoid double-counting in that alarm.
+        emit_metric(
+            "RateLimitExceeded", 1, "Count",
+            UserId=user_context.user_id
+        )
+        emit_metric(
+            "RateLimitExceeded", 1, "Count",
+            include_dimensionless=False,
+            AgentId=agent_id
+        )
+        logger.warning(
+            "Rate limit exceeded",
+            userId=user_context.user_id,
+            agentId=agent_id,
+            limit=effective_limit
+        )
         raise HTTPException(
             status_code=429,
             detail={
@@ -360,6 +447,9 @@ async def proxy_jsonrpc_request(
     method = jsonrpc_request.get('method', '')
     is_streaming = method in ('SendStreamingMessage', 'message/stream')
     
+    # Tag request state so the middleware can detect JSON-RPC streaming
+    request.state.is_streaming = is_streaming
+    
     # Transform params
     params = jsonrpc_request.get('params', {})
     transformed_params = transform_a2a_to_bedrock_format(params)
@@ -398,7 +488,7 @@ async def proxy_jsonrpc_request(
     if is_streaming:
         return await stream_bedrock_response(invoke_url, forward_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers, agent_id)
 
 
 @app.api_route(
@@ -465,7 +555,8 @@ async def proxy_request(
             body=body_str,
             access_token=access_token,
             headers=dict(request.headers),
-            is_streaming=is_streaming
+            is_streaming=is_streaming,
+            agent_id=agent_id
         )
     else:
         return await forward_to_standard_backend(
@@ -475,7 +566,8 @@ async def proxy_request(
             body=body_str,
             access_token=access_token,
             headers=dict(request.headers),
-            is_streaming=is_streaming
+            is_streaming=is_streaming,
+            agent_id=agent_id
         )
 
 
@@ -485,7 +577,8 @@ async def forward_to_bedrock(
     body: Optional[str],
     access_token: str,
     headers: Dict[str, str],
-    is_streaming: bool
+    is_streaming: bool,
+    agent_id: str = None
 ) -> Response:
     """
     Forward request to Bedrock AgentCore backend using JSON-RPC format.
@@ -494,7 +587,7 @@ async def forward_to_bedrock(
     
     # Convert operation to JSON-RPC method
     jsonrpc_method = operation.replace(':', '/')
-    logger.info(f"Converting '{operation}' to JSON-RPC method '{jsonrpc_method}'")
+    logger.info(f"Converting '{operation}' to JSON-RPC method '{jsonrpc_method}'", agentId=agent_id)
     
     # Parse and transform body
     try:
@@ -520,7 +613,7 @@ async def forward_to_bedrock(
     else:
         invoke_url = backend_url.rstrip('/')
     
-    logger.info(f"Forwarding to Bedrock AgentCore: {invoke_url}")
+    logger.info(f"Forwarding to Bedrock AgentCore: {invoke_url}", agentId=agent_id)
     
     # Build headers
     backend_headers = {
@@ -532,18 +625,26 @@ async def forward_to_bedrock(
     if is_streaming:
         return await stream_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers, agent_id)
 
 
 async def buffered_bedrock_response(
     url: str,
     jsonrpc_request: dict,
-    headers: dict
+    headers: dict,
+    agent_id: str = None
 ) -> JSONResponse:
     """Make buffered request to Bedrock AgentCore."""
+    backend_start = time.time()
+    
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             response = await client.post(url, json=jsonrpc_request, headers=headers)
+            
+            # Record backend latency
+            backend_latency_ms = (time.time() - backend_start) * 1000
+            if agent_id:
+                emit_metric("BackendLatency", backend_latency_ms, "Milliseconds", AgentId=agent_id)
             
             return JSONResponse(
                 content=response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text,
@@ -555,11 +656,20 @@ async def buffered_bedrock_response(
                 }
             )
         except httpx.TimeoutException:
+            # ErrorCount{AgentId} and dimensionless ErrorCount are emitted
+            # by the middleware (which sees the resulting 504 status).
+            # Only emit the ErrorCode-dimensioned metric here, without a
+            # dimensionless copy, to avoid inflating the error-rate alarm.
+            emit_metric("ErrorCount", 1, "Count",
+                        include_dimensionless=False, ErrorCode="BACKEND_TIMEOUT")
             raise HTTPException(status_code=504, detail={
                 'error': {'code': 'BACKEND_TIMEOUT', 'message': 'Backend request timed out'}
             })
         except httpx.RequestError as e:
             logger.error(f"Backend request failed: {e}")
+            # Same rationale as TimeoutException above.
+            emit_metric("ErrorCount", 1, "Count",
+                        include_dimensionless=False, ErrorCode=BACKEND_UNREACHABLE)
             raise HTTPException(status_code=502, detail={
                 'error': {'code': BACKEND_UNREACHABLE, 'message': 'Failed to connect to backend'}
             })
@@ -604,7 +714,8 @@ async def forward_to_standard_backend(
     body: Optional[str],
     access_token: str,
     headers: Dict[str, str],
-    is_streaming: bool
+    is_streaming: bool,
+    agent_id: str = None
 ) -> Response:
     """Forward request to standard A2A backend."""
     
@@ -613,27 +724,29 @@ async def forward_to_standard_backend(
     operation_path = operation.lstrip('/')
     request_url = f"{backend_url}/{operation_path}"
     
-    logger.info(f"Forwarding to standard backend: {method} {request_url}")
+    logger.info(f"Forwarding to standard backend: {method} {request_url}", agentId=agent_id)
     
     # Build headers
     backend_headers = build_backend_headers(headers, access_token, backend_url)
     
     if is_streaming:
-        return await stream_standard_response(request_url, method, body, backend_headers)
+        return await stream_standard_response(request_url, method, body, backend_headers, agent_id)
     else:
-        return await buffered_standard_response(request_url, method, body, backend_headers)
+        return await buffered_standard_response(request_url, method, body, backend_headers, agent_id)
 
 
 async def buffered_standard_response(
     url: str,
     method: str,
     body: Optional[str],
-    headers: dict
+    headers: dict,
+    agent_id: str = None
 ) -> StreamingResponse:
     """Make buffered request to standard backend with keepalive pings."""
     import asyncio
     
     KEEPALIVE_INTERVAL = 10  # seconds
+    backend_start = time.time()
     
     async def generate() -> AsyncGenerator[bytes, None]:
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -662,15 +775,33 @@ async def buffered_standard_response(
                 # Get the response
                 response = request_task.result()
                 
+                # Record backend latency
+                backend_latency_ms = (time.time() - backend_start) * 1000
+                if agent_id:
+                    emit_metric("BackendLatency", backend_latency_ms, "Milliseconds", AgentId=agent_id)
+                
                 # Yield the actual response content
                 yield response.content
                     
             except httpx.TimeoutException:
+                # Errors inside the generator are invisible to the middleware
+                # (it already saw a 200 StreamingResponse), so the AgentId
+                # emit here is the only source — keep its dimensionless copy.
+                # Suppress dimensionless on the ErrorCode emit to avoid
+                # double-counting in the error-rate alarm.
+                if agent_id:
+                    emit_metric("ErrorCount", 1, "Count", AgentId=agent_id)
+                emit_metric("ErrorCount", 1, "Count",
+                            include_dimensionless=False, ErrorCode="BACKEND_TIMEOUT")
                 yield json.dumps({
                     'error': {'code': 'BACKEND_TIMEOUT', 'message': 'Backend request timed out'}
                 }).encode('utf-8')
             except httpx.RequestError as e:
                 logger.error(f"Backend request failed: {e}")
+                if agent_id:
+                    emit_metric("ErrorCount", 1, "Count", AgentId=agent_id)
+                emit_metric("ErrorCount", 1, "Count",
+                            include_dimensionless=False, ErrorCode=BACKEND_UNREACHABLE)
                 yield json.dumps({
                     'error': {'code': BACKEND_UNREACHABLE, 'message': 'Failed to connect to backend'}
                 }).encode('utf-8')
@@ -691,7 +822,8 @@ async def stream_standard_response(
     url: str,
     method: str,
     body: Optional[str],
-    headers: dict
+    headers: dict,
+    agent_id: str = None
 ) -> StreamingResponse:
     """Stream response from standard backend with keepalive pings every 10s."""
     
@@ -717,13 +849,24 @@ async def stream_standard_response(
                                 await queue.put(('data', (line + '\n').encode('utf-8')))
                     await queue.put(('done', None))
                 except httpx.TimeoutException:
-                    logger.error("Stream timeout")
+                    logger.error("Stream timeout", agentId=agent_id)
+                    # Same as buffered_standard: generator errors are invisible
+                    # to middleware. AgentId emit keeps dimensionless; ErrorCode
+                    # emit suppresses it to avoid inflating the alarm.
+                    if agent_id:
+                        emit_metric("ErrorCount", 1, "Count", AgentId=agent_id)
+                    emit_metric("ErrorCount", 1, "Count",
+                                include_dimensionless=False, ErrorCode="STREAM_TIMEOUT")
                     await queue.put(('error', b'event: error\ndata: {"error": "Stream timeout"}\n\n'))
                 except httpx.RequestError as e:
-                    logger.error(f"Stream error: {e}")
+                    logger.error(f"Stream error: {e}", agentId=agent_id)
+                    if agent_id:
+                        emit_metric("ErrorCount", 1, "Count", AgentId=agent_id)
+                    emit_metric("ErrorCount", 1, "Count",
+                                include_dimensionless=False, ErrorCode=BACKEND_UNREACHABLE)
                     await queue.put(('error', b'event: error\ndata: {"error": "Backend connection failed"}\n\n'))
                 except Exception as e:
-                    logger.error(f"Unexpected stream error: {e}")
+                    logger.error(f"Unexpected stream error: {e}", agentId=agent_id)
                     await queue.put(('error', b'event: error\ndata: {"error": "Unexpected error"}\n\n'))
                 finally:
                     stream_done.set()
