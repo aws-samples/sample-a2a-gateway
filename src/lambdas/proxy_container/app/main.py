@@ -128,7 +128,7 @@ async def observability_middleware(request: Request, call_next):
             by_agent.record("ErrorCount", 1, "Count")
         if is_streaming:
             by_agent.record("StreamingRequests", 1, "Count")
-            by_agent.record("StreamDuration", latency_ms / 1000, "Seconds")
+            by_agent.record("TimeToFirstResponse", latency_ms / 1000, "Seconds")
         by_agent.flush()
     
     # Emit metrics by operation (single dimension: Operation)

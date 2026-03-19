@@ -639,7 +639,7 @@ Metrics are emitted using CloudWatch Embedded Metric Format (EMF), which extract
 | `RateLimitExceeded` | `[UserId]`, `[AgentId]`, `[]` | Rate limit hits |
 | `AuthFailures` | `[Reason]`, `[]` | Auth failures by reason |
 | `StreamingRequests` | `[AgentId]`, `[]` | Streaming request count |
-| `StreamDuration` | `[AgentId]`, `[]` | Streaming request duration (s) |
+| `TimeToFirstResponse` | `[AgentId]`, `[]` | Time to first response for streaming requests (s) |
 | `AgentDiscoveryCount` | `[]` | Discovery endpoint calls |
 | `SearchCount` | `[]` | Search endpoint calls |
 | `AdminOperations` | `[Operation]`, `[]` | Admin operations by type |

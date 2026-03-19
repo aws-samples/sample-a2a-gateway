@@ -331,7 +331,7 @@ class RequestTracker:
         
         if self._is_streaming:
             self.metrics.record("StreamingRequests", 1, "Count")
-            self.metrics.record("StreamDuration", latency_ms / 1000, "Seconds")
+            self.metrics.record("TimeToFirstResponse", latency_ms / 1000, "Seconds")
         
         if error:
             self.metrics.record("ErrorCount", 1, "Count")
@@ -347,7 +347,7 @@ class RequestTracker:
             op_metrics.record("RequestLatency", latency_ms, "Milliseconds")
             if self._is_streaming:
                 op_metrics.record("StreamingRequests", 1, "Count")
-                op_metrics.record("StreamDuration", latency_ms / 1000, "Seconds")
+                op_metrics.record("TimeToFirstResponse", latency_ms / 1000, "Seconds")
             if error:
                 op_metrics.record("ErrorCount", 1, "Count")
             op_metrics.flush()
