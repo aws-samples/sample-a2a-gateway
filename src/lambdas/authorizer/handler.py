@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.jwt_validator import create_validator_from_env
 from shared.dynamodb_client import create_client_from_env
 from shared.errors import AuthenticationError, MISSING_AUTH_HEADER, INVALID_JWT_SIGNATURE, EXPIRED_JWT, INVALID_JWT_ISSUER
+from shared.observability import emit_metric, log_info, log_error
 from jose.exceptions import JWTError, ExpiredSignatureError, JWTClaimsError
 
 # Configure logging
@@ -69,11 +70,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
     except AuthenticationError as e:
         logger.warning(f"Authentication failed: {e.code} - {e.message}")
+        # Emit auth failure metric
+        emit_metric("AuthFailures", 1, "Count", Reason=e.code)
         # Return Deny policy for authentication failures
         raise Exception('Unauthorized')
         
     except Exception as e:
         logger.error(f"Unexpected error in authorizer: {str(e)}", exc_info=True)
+        # Emit auth failure metric
+        emit_metric("AuthFailures", 1, "Count", Reason="INTERNAL_ERROR")
         # Return Deny policy for unexpected errors
         raise Exception('Unauthorized')
 

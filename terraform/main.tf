@@ -43,7 +43,8 @@ resource "null_resource" "build_proxy_container" {
       filemd5("${path.module}/../src/lambdas/shared/errors.py"),
       filemd5("${path.module}/../src/lambdas/shared/oauth_client.py"),
       filemd5("${path.module}/../src/lambdas/shared/url_rewriter.py"),
-      filemd5("${path.module}/../src/lambdas/shared/rate_limit_client.py")
+      filemd5("${path.module}/../src/lambdas/shared/rate_limit_client.py"),
+      filemd5("${path.module}/../src/lambdas/shared/observability.py")
     ]))
     ecr_repo        = module.ecr.proxy_repository_url
   }
@@ -166,6 +167,10 @@ module "lambda_functions" {
   vpc_subnet_ids         = var.enable_private_deployment ? local.subnet_ids : []
   vpc_security_group_ids = var.enable_private_deployment ? [local.lambda_sg_id] : []
 
+  # Observability
+  enable_metrics    = var.enable_metrics
+  metrics_namespace = "A2AGateway"
+
   depends_on = [null_resource.build_proxy_container]
 }
 
@@ -203,13 +208,14 @@ locals {
 resource "null_resource" "update_registry_lambda" {
   triggers = {
     gateway_domain = local.gateway_domain
+    enable_metrics = var.enable_metrics
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.registry_lambda_name} \
-        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},LOG_LEVEL=INFO}" \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},ENABLE_METRICS=${var.enable_metrics},METRICS_NAMESPACE=A2AGateway,LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }
@@ -223,13 +229,14 @@ resource "null_resource" "update_admin_lambda" {
     gateway_domain     = local.gateway_domain
     vector_bucket_name = module.s3_vectors.vector_bucket_name
     vector_index_name  = module.s3_vectors.vector_index_name
+    enable_metrics     = var.enable_metrics
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.admin_lambda_name} \
-        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},LOG_LEVEL=INFO}" \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},ENABLE_METRICS=${var.enable_metrics},METRICS_NAMESPACE=A2AGateway,LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }
@@ -241,13 +248,14 @@ resource "null_resource" "update_admin_lambda" {
 resource "null_resource" "update_proxy_lambda" {
   triggers = {
     gateway_domain = local.gateway_domain
+    enable_metrics = var.enable_metrics
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.proxy_lambda_name} \
-        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},RATE_LIMIT_TABLE=${module.dynamodb.rate_limit_counters_table_name},GATEWAY_DOMAIN=${local.gateway_domain},LOG_LEVEL=INFO}" \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},RATE_LIMIT_TABLE=${module.dynamodb.rate_limit_counters_table_name},GATEWAY_DOMAIN=${local.gateway_domain},ENABLE_METRICS=${var.enable_metrics},METRICS_NAMESPACE=A2AGateway,LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }
@@ -259,16 +267,42 @@ resource "null_resource" "update_proxy_lambda" {
 resource "null_resource" "update_search_lambda" {
   triggers = {
     gateway_domain = local.gateway_domain
+    enable_metrics = var.enable_metrics
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda update-function-configuration \
         --function-name ${module.lambda_functions.search_lambda_name} \
-        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},LOG_LEVEL=INFO}" \
+        --environment "Variables={AGENT_REGISTRY_TABLE=${module.dynamodb.agent_registry_table_name},PERMISSIONS_TABLE=${module.dynamodb.permissions_table_name},GATEWAY_DOMAIN=${local.gateway_domain},VECTOR_BUCKET_NAME=${module.s3_vectors.vector_bucket_name},VECTOR_INDEX_NAME=${module.s3_vectors.vector_index_name},ENABLE_METRICS=${var.enable_metrics},METRICS_NAMESPACE=A2AGateway,LOG_LEVEL=INFO}" \
         --region ${var.aws_region}
     EOT
   }
 
   depends_on = [module.api_gateway]
+}
+
+
+# ─── Observability (Dashboard & Alarms) ─────────────────────────────────────────
+
+module "observability" {
+  count  = var.enable_observability ? 1 : 0
+  source = "./modules/observability"
+
+  project_name = var.project_name
+  environment  = var.environment
+  aws_region   = var.aws_region
+
+  # Lambda function names for dashboard
+  authorizer_lambda_name = module.lambda_functions.authorizer_lambda_name
+  registry_lambda_name   = module.lambda_functions.registry_lambda_name
+  proxy_lambda_name      = module.lambda_functions.proxy_lambda_name
+  admin_lambda_name      = module.lambda_functions.admin_lambda_name
+  search_lambda_name     = module.lambda_functions.search_lambda_name
+
+  # SNS configuration
+  enable_alarms_sns = var.enable_alarms_sns
+  alarm_email       = var.alarm_email
+
+  depends_on = [module.lambda_functions]
 }

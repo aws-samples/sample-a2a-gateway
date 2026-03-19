@@ -19,6 +19,7 @@ from shared.errors import (
     GatewayError, BadRequestError, AuthorizationError, BackendError,
     ADMIN_PERMISSION_REQUIRED, AGENT_NOT_FOUND, BACKEND_UNREACHABLE, OAUTH_ERROR
 )
+from shared.observability import emit_metric, log_info, log_error
 
 # Configure logging
 logger = logging.getLogger()
@@ -122,6 +123,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
     except GatewayError as e:
         logger.error(f"Gateway error: {e.code} - {e.message}")
+        emit_metric("ErrorCount", 1, "Count", ErrorCode=e.code)
         return {
             'statusCode': e.status_code,
             'headers': {
@@ -292,6 +294,9 @@ def handle_register(event: Dict[str, Any]) -> Dict[str, Any]:
     # Generate and store embedding for semantic search
     store_agent_embedding(agent_id, agent_card, name)
     
+    # Emit admin operation metric
+    emit_metric("AdminOperations", 1, "Count", Operation="register")
+    
     logger.info(f"Registered agent: {agent_id}")
     
     # Build gateway URL
@@ -372,6 +377,9 @@ def handle_sync(event: Dict[str, Any]) -> Dict[str, Any]:
     # Update embedding for semantic search
     store_agent_embedding(agent_id, new_agent_card, agent.get('name', agent_id))
     
+    # Emit admin operation metric
+    emit_metric("AdminOperations", 1, "Count", Operation="sync")
+    
     logger.info(f"Synced agent: {agent_id}")
     
     return {
@@ -441,6 +449,9 @@ def handle_status_update(event: Dict[str, Any]) -> Dict[str, Any]:
         )
     
     db_client.update_agent_status(agent_id, new_status)
+    
+    # Emit admin operation metric
+    emit_metric("AdminOperations", 1, "Count", Operation="status_update")
     
     logger.info(f"Updated agent status: {agent_id} -> {new_status}")
     

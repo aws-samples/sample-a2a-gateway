@@ -69,6 +69,8 @@ resource "aws_lambda_function" "authorizer" {
       COGNITO_CLIENT_ID      = var.cognito_client_id
       AGENT_REGISTRY_TABLE   = var.agent_registry_table_name
       PERMISSIONS_TABLE      = var.permissions_table_name
+      ENABLE_METRICS         = tostring(var.enable_metrics)
+      METRICS_NAMESPACE      = var.metrics_namespace
       LOG_LEVEL              = "INFO"
     }
   }

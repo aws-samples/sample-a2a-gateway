@@ -105,3 +105,17 @@ variable "vpc_security_group_ids" {
   type        = list(string)
   default     = []
 }
+
+# ─── Observability variables ───────────────────────────────────────────────────
+
+variable "enable_metrics" {
+  description = "Enable CloudWatch metrics emission via EMF"
+  type        = bool
+  default     = true
+}
+
+variable "metrics_namespace" {
+  description = "CloudWatch metrics namespace"
+  type        = string
+  default     = "A2AGateway"
+}

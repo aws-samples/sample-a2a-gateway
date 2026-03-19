@@ -14,6 +14,7 @@ from shared.s3vectors_client import create_client_from_env as create_vectors_cli
 from shared.embedding_client import EmbeddingClient
 from shared.url_rewriter import rewrite_agent_card_urls
 from shared.errors import GatewayError, BadRequestError
+from shared.observability import emit_metric, log_info, log_error
 
 # Configure logging
 logger = logging.getLogger()
@@ -110,6 +111,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 })
         
         logger.info(f"Returning {len(agent_cards)} results")
+        
+        # Emit search metric
+        emit_metric("SearchCount", 1, "Count")
         
         return build_response(200, {
             "results": agent_cards,

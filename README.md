@@ -562,6 +562,7 @@ aws dynamodb get-item \
     /vpc            - VPC with private subnets and security groups (private deployment)
     /vpc-endpoints  - VPC endpoints for AWS services (standalone, supports BYOVPC)
     /s3-vectors     - S3 Vectors bucket and index for semantic search
+    /observability  - CloudWatch dashboard and alarms
 /src/lambdas
   /authorizer       - JWT validation
   /registry         - Agent discovery
@@ -576,6 +577,85 @@ aws dynamodb get-item \
 /scripts            - Helper scripts
 /diagrams           - Architecture diagrams
 ```
+
+## Observability
+
+The gateway includes built-in observability features for monitoring agent operations in production.
+
+### CloudWatch Dashboard
+
+When `enable_observability = true` (default), a CloudWatch dashboard is created with:
+
+- **Gateway Health**: Total requests, error rate %, average latency, active alarms
+- **Request Volume**: Requests by agent over time
+- **Latency Percentiles**: P50, P95, P99 latency trends
+- **Errors**: Errors by agent and by error type
+- **Backend Performance**: Backend latency by agent, gateway vs backend latency breakdown
+- **Rate Limiting**: Rate limit hits by user
+- **Auth Failures**: Authentication failure trends by reason
+- **Operations**: Streaming request volume, discovery/search usage, admin operations over time
+- **Lambda Insights**: Invocations and errors for all Lambda functions
+
+Access the dashboard URL from Terraform outputs:
+```bash
+terraform output dashboard_url
+```
+
+### CloudWatch Alarms
+
+The following alarms are created automatically:
+
+| Alarm | Default Threshold | Description |
+|-------|-------------------|-------------|
+| High Error Rate | > 5% | Error rate exceeds threshold |
+| High Latency | P95 > 10s | Response latency degradation |
+| Backend Unreachable | > 5 errors/5min | Backend connectivity issues |
+| Auth Failure Spike | > 50/5min | Potential attack or misconfiguration |
+| Rate Limit Exhaustion | > 100 hits/5min | Users hitting rate limits |
+| Proxy Lambda Errors | > 5/5min | Proxy Lambda throwing errors |
+| Authorizer Lambda Errors | > 5/5min | Authorizer Lambda throwing errors |
+
+### Alarm Notifications (Optional)
+
+To receive alarm notifications via email:
+
+```hcl
+enable_alarms_sns = true
+alarm_email       = "ops-team@example.com"
+```
+
+This creates an SNS topic and subscribes the email address. You can also subscribe additional endpoints (Slack, PagerDuty, etc.) to the SNS topic ARN from Terraform outputs.
+
+### Metrics
+
+Metrics are emitted using CloudWatch Embedded Metric Format (EMF), which extracts metrics from log lines with no additional API calls or cost beyond log storage. Each metric is emitted with single dimensions only (one dimension per EMF blob) to ensure dashboard wildcard queries and SEARCH expressions work correctly.
+
+| Metric | Dimensions (each emitted separately) | Description |
+|--------|--------------------------------------|-------------|
+| `RequestCount` | `[AgentId]`, `[Operation]`, `[]` | Total requests |
+| `RequestLatency` | `[AgentId]`, `[Operation]`, `[]` | End-to-end latency (ms) |
+| `BackendLatency` | `[AgentId]`, `[]` | Backend call latency (ms) |
+| `ErrorCount` | `[AgentId]`, `[ErrorCode]`, `[]` | Errors by agent and type |
+| `RateLimitExceeded` | `[UserId]`, `[AgentId]`, `[]` | Rate limit hits |
+| `AuthFailures` | `[Reason]`, `[]` | Auth failures by reason |
+| `StreamingRequests` | `[AgentId]`, `[]` | Streaming request count |
+| `TimeToFirstResponse` | `[AgentId]`, `[]` | Time to first response for streaming requests (s) |
+| `AgentDiscoveryCount` | `[]` | Discovery endpoint calls |
+| `SearchCount` | `[]` | Search endpoint calls |
+| `AdminOperations` | `[Operation]`, `[]` | Admin operations by type |
+
+The `[]` (dimensionless) entries are created automatically via the EMF dual dimension set and are used by CloudWatch alarms, which cannot use SEARCH expressions.
+
+### Disabling Observability
+
+To deploy without observability features:
+
+```hcl
+enable_observability = false
+enable_metrics       = false
+```
+
+This skips dashboard/alarm creation and disables metric emission from Lambdas.
 
 ## Security Considerations
 
