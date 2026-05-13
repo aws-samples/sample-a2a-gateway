@@ -48,6 +48,10 @@ EXCLUDED_HEADERS = {
 REST_TO_JSONRPC_MAP = {
     'message:send': 'message/send',
     'message:stream': 'message/stream',
+    'tasks:get': 'tasks/get',
+    'tasks:cancel': 'tasks/cancel',
+    'tasks:list': 'tasks/list',
+    'tasks:resubscribe': 'tasks/resubscribe',
 }
 
 
@@ -394,7 +398,7 @@ def handle_jsonrpc_to_jsonrpc(
     jsonrpc_id = jsonrpc_request.get('id')
     
     # Determine if streaming based on method
-    is_streaming = method in ('SendStreamingMessage', 'message/stream')
+    is_streaming = method in ('SendStreamingMessage', 'message/stream', 'TaskResubscribe', 'tasks/resubscribe')
     
     # Transform A2A format to Bedrock AgentCore format (role values)
     params = jsonrpc_request.get('params', {})
@@ -413,16 +417,19 @@ def handle_jsonrpc_to_jsonrpc(
     
     # Build invoke URL
     invoke_url = get_backend_invoke_url(backend_url)
-    
-    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method: {normalized_method}")
-    
-    # Build headers
+
+    # Use contextId for session routing
+    session_id = extract_context_id(transformed_params)
+    if isinstance(transformed_params, dict) and not transformed_params.get('contextId'):
+        transformed_params['contextId'] = session_id
+        forward_request['params'] = transformed_params
+    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method={normalized_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     try:
         response = requests.post(
             invoke_url,
@@ -507,17 +514,19 @@ def handle_rest_to_jsonrpc(
     
     # Build invoke URL
     invoke_url = get_backend_invoke_url(backend_url)
-    
-    logger.info(f"Translating REST to JSON-RPC: {operation} -> {jsonrpc_method}")
-    logger.info(f"Forwarding to backend: {invoke_url}")
-    
-    # Build headers
+
+    # Use contextId for session routing
+    session_id = extract_context_id(transformed_body)
+    if isinstance(transformed_body, dict) and not transformed_body.get('contextId'):
+        transformed_body['contextId'] = session_id
+        jsonrpc_request['params'] = transformed_body
+    logger.info(f"Forwarding to backend: {invoke_url}, method={jsonrpc_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     try:
         response = requests.post(
             invoke_url,
@@ -563,6 +572,10 @@ def normalize_jsonrpc_method(method: str) -> str:
     method_map = {
         'SendMessage': 'message/send',
         'SendStreamingMessage': 'message/stream',
+        'GetTask': 'tasks/get',
+        'CancelTask': 'tasks/cancel',
+        'ListTasks': 'tasks/list',
+        'TaskResubscribe': 'tasks/resubscribe',
     }
     return method_map.get(method, method)
 
@@ -766,7 +779,8 @@ def is_streaming_operation(operation: str) -> bool:
         True if streaming operation
     """
     # A2A streaming operations
-    return operation.startswith('message:stream') or '/message:stream' in operation
+    return (operation.startswith('message:stream') or '/message:stream' in operation
+            or operation.startswith('tasks:resubscribe') or '/tasks:resubscribe' in operation)
 
 
 def transform_a2a_to_bedrock_format(data: Any) -> Any:
@@ -806,10 +820,23 @@ def transform_a2a_to_bedrock_format(data: Any) -> Any:
         return data
 
 
+def extract_context_id(params: Any) -> str:
+    """Extract contextId from A2A params for session routing.
+
+    Uses contextId if present (A2A protocol field for session continuity),
+    otherwise generates a new UUID.
+    """
+    if isinstance(params, dict):
+        context_id = params.get('contextId') or params.get('message', {}).get('contextId')
+        if context_id:
+            return context_id
+    return str(uuid4())
+
+
 def handle_buffered_response(response: requests.Response) -> Dict[str, Any]:
     """
     Handle buffered response from backend.
-    
+
     Args:
         response: Requests response object
         

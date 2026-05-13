@@ -58,6 +58,7 @@ resource "null_resource" "build_proxy_container" {
       # Build container
       cd ${path.module}/../src/lambdas
       docker build \
+        --no-cache \
         -t ${module.ecr.proxy_repository_url}:latest \
         -f proxy_container/Dockerfile \
         --platform linux/amd64 \
