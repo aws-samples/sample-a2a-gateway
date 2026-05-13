@@ -42,6 +42,7 @@ The gateway hosts multiple A2A agents at a single domain with path-based routing
 - ✅ Fine-grained access control via Cognito JWT scopes
 - ✅ Per-user rate limiting via DynamoDB
 - ✅ Semantic search for agent discovery via S3 Vectors
+- ✅ Async task lifecycle support (get, cancel) via `contextId` session routing
 - ✅ SSE streaming support for `message:stream` operations
 - ✅ OAuth 2.0 Client Credentials flow for backend authentication
 - ✅ Serverless architecture (API Gateway + Lambda + DynamoDB)
@@ -83,14 +84,15 @@ The gateway supports both A2A protocol bindings as defined in the [A2A specifica
 - `POST /agents/{agentId}/message:send` - Send message (buffered)
 - `POST /agents/{agentId}/message:stream` - Send message (SSE streaming)
 - `GET /agents/{agentId}/.well-known/agent-card.json` - Get Agent Card
-- `GET /agents/{agentId}/tasks` - List tasks
-- `GET /agents/{agentId}/tasks/{taskId}` - Get task status
-- `POST /agents/{agentId}/tasks/{taskId}:cancel` - Cancel task
+- `POST /agents/{agentId}/tasks:get` - Get task by ID
+- `POST /agents/{agentId}/tasks:cancel` - Cancel a task
 
 #### JSON-RPC Binding (Single endpoint with method in body)
 
 - `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "SendMessage", ...}`
 - `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "SendStreamingMessage", ...}`
+- `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "GetTask", ...}`
+- `POST /agents/{agentId}` with `{"jsonrpc": "2.0", "method": "CancelTask", ...}`
 
 The gateway automatically detects the protocol binding based on the request format and translates to JSON-RPC for all backend communication.
 
@@ -463,6 +465,49 @@ curl -N -X POST $GATEWAY_URL/agents/bedrock-agent \
   }'
 ```
 
+### 8. Task Operations (Async Agents)
+
+For agents that support async task lifecycle, the gateway passes through task operations using `contextId` for session routing. The `contextId` ensures follow-up requests (get, cancel) hit the same backend container that handled the original `message:send`.
+
+#### Get Task
+
+```bash
+# HTTP+JSON/REST
+curl -X POST $GATEWAY_URL/agents/my-async-agent/tasks:get \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "task-uuid-from-send-response",
+    "contextId": "context-uuid-from-send-response"
+  }'
+
+# JSON-RPC
+curl -X POST $GATEWAY_URL/agents/my-async-agent \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "req-002",
+    "method": "GetTask",
+    "params": {
+      "id": "task-uuid-from-send-response",
+      "contextId": "context-uuid-from-send-response"
+    }
+  }'
+```
+
+#### Cancel Task
+
+```bash
+curl -X POST $GATEWAY_URL/agents/my-async-agent/tasks:cancel \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "task-uuid",
+    "contextId": "context-uuid"
+  }'
+```
+
 ### Complete Workflow Example
 
 ```bash
@@ -517,16 +562,15 @@ This gateway implements core A2A messaging operations with support for both prot
 | **Get Agent Card** | `GET /agents/{id}/.well-known/agent-card.json` | ✅ Supported | Cached with URL rewriting |
 | **Send Message** | `POST /agents/{id}/message:send` | ✅ Supported | Buffered response |
 | **Stream Message** | `POST /agents/{id}/message:stream` | ✅ Supported | Real-time SSE streaming |
-| **Get Task** | `GET /tasks/{id}` | ❌ Not Implemented | |
-| **List Tasks** | `GET /tasks` | ❌ Not Implemented | |
-| **Cancel Task** | `POST /tasks/{id}:cancel` | ❌ Not Implemented | |
+| **Get Task** | `POST /agents/{id}/tasks:get` | ✅ Supported | Pass-through to backend |
+| **Cancel Task** | `POST /agents/{id}/tasks:cancel` | ✅ Supported | Pass-through to backend |
 | **Subscribe to Task** | `POST /tasks/{id}:subscribe` | ❌ Not Implemented | |
 | **Push Notifications** | `POST /tasks/{id}/pushNotificationConfigs` | ❌ Not Implemented | Webhook-based async updates |
 | **Extended Agent Card** | `GET /extendedAgentCard` | ❌ Not Implemented | User-specific capabilities |
 
 ### Known Limitations
 
-**Task Management**: Task lifecycle operations (get, list, cancel, subscribe) are not implemented. The gateway focuses on stateless message proxying rather than task state management.
+**Task Management**: Task get and cancel are supported as opaque pass-throughs to the backend agent. The gateway does not store task state itself — the backend agent is responsible for task persistence.
 
 **Integration Timeout**: API Gateway REST API has a default 29-second integration timeout. This gateway is configured for 300 seconds (5 minutes), but you must request a quota increase from AWS Support to enable timeouts beyond 29 seconds. Without the quota increase, requests will timeout at 29 seconds regardless of the configured value. Request the "Amazon API Gateway - REST API integration timeout" quota increase in the AWS Service Quotas console.
 

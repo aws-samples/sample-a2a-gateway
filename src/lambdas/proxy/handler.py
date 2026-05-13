@@ -50,7 +50,6 @@ REST_TO_JSONRPC_MAP = {
     'message:stream': 'message/stream',
     'tasks:get': 'tasks/get',
     'tasks:cancel': 'tasks/cancel',
-    'tasks:list': 'tasks/list',
     'tasks:resubscribe': 'tasks/resubscribe',
 }
 
@@ -574,7 +573,6 @@ def normalize_jsonrpc_method(method: str) -> str:
         'SendStreamingMessage': 'message/stream',
         'GetTask': 'tasks/get',
         'CancelTask': 'tasks/cancel',
-        'ListTasks': 'tasks/list',
         'TaskResubscribe': 'tasks/resubscribe',
     }
     return method_map.get(method, method)

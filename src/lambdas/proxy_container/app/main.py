@@ -384,7 +384,6 @@ async def proxy_jsonrpc_request(
         'SendStreamingMessage': 'message/stream',
         'GetTask': 'tasks/get',
         'CancelTask': 'tasks/cancel',
-        'ListTasks': 'tasks/list',
         'TaskResubscribe': 'tasks/resubscribe',
         'SubscribeToTask': 'tasks/resubscribe',
     }

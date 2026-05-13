@@ -120,7 +120,6 @@ class TestStreamingDetection:
         assert is_streaming_operation('tasks') is False
         assert is_streaming_operation('tasks:get') is False
         assert is_streaming_operation('tasks:cancel') is False
-        assert is_streaming_operation('tasks:list') is False
 
     def test_tasks_resubscribe_is_streaming(self):
         """Should detect tasks:resubscribe as streaming."""
@@ -580,10 +579,6 @@ class TestJsonRpcMethodNormalization:
         """Should normalize CancelTask to tasks/cancel."""
         assert normalize_jsonrpc_method('CancelTask') == 'tasks/cancel'
 
-    def test_normalize_list_tasks(self):
-        """Should normalize ListTasks to tasks/list."""
-        assert normalize_jsonrpc_method('ListTasks') == 'tasks/list'
-
     def test_normalize_task_resubscribe(self):
         """Should normalize TaskResubscribe to tasks/resubscribe."""
         assert normalize_jsonrpc_method('TaskResubscribe') == 'tasks/resubscribe'
@@ -594,7 +589,6 @@ class TestJsonRpcMethodNormalization:
         assert normalize_jsonrpc_method('message/stream') == 'message/stream'
         assert normalize_jsonrpc_method('tasks/get') == 'tasks/get'
         assert normalize_jsonrpc_method('tasks/cancel') == 'tasks/cancel'
-        assert normalize_jsonrpc_method('tasks/list') == 'tasks/list'
         assert normalize_jsonrpc_method('tasks/resubscribe') == 'tasks/resubscribe'
 
 
@@ -610,7 +604,6 @@ class TestRestToJsonRpcMap:
         """Should map task operations."""
         assert REST_TO_JSONRPC_MAP['tasks:get'] == 'tasks/get'
         assert REST_TO_JSONRPC_MAP['tasks:cancel'] == 'tasks/cancel'
-        assert REST_TO_JSONRPC_MAP['tasks:list'] == 'tasks/list'
         assert REST_TO_JSONRPC_MAP['tasks:resubscribe'] == 'tasks/resubscribe'
 
 
