@@ -1,0 +1,6 @@
+a2a-sdk==1.0.2
+strands-agents==1.18.0
+protobuf==6.32.1
+uvicorn
+starlette
+fastapi

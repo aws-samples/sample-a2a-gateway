@@ -50,7 +50,6 @@ REST_TO_JSONRPC_MAP = {
     'message:stream': 'message/stream',
     'tasks:get': 'tasks/get',
     'tasks:cancel': 'tasks/cancel',
-    'tasks:resubscribe': 'tasks/resubscribe',
 }
 
 
@@ -397,7 +396,7 @@ def handle_jsonrpc_to_jsonrpc(
     jsonrpc_id = jsonrpc_request.get('id')
     
     # Determine if streaming based on method
-    is_streaming = method in ('SendStreamingMessage', 'message/stream', 'TaskResubscribe', 'tasks/resubscribe')
+    is_streaming = method in ('SendStreamingMessage', 'message/stream')
     
     # Transform A2A format to Bedrock AgentCore format (role values)
     params = jsonrpc_request.get('params', {})
@@ -437,14 +436,16 @@ def handle_jsonrpc_to_jsonrpc(
             stream=is_streaming,
             timeout=900 if is_streaming else 300
         )
-        
+
         logger.info(f"Backend response status: {response.status_code}")
-        
+
         if is_streaming:
             return handle_streaming_response(response)
         else:
-            return handle_buffered_response(response)
-            
+            return inject_context_id_in_response(
+                handle_buffered_response(response), session_id
+            )
+
     except requests.Timeout:
         raise GatewayTimeoutError(
             STREAM_IDLE_TIMEOUT if is_streaming else 'BACKEND_TIMEOUT',
@@ -534,15 +535,17 @@ def handle_rest_to_jsonrpc(
             stream=is_streaming,
             timeout=900 if is_streaming else 300
         )
-        
+
         logger.info(f"Backend response status: {response.status_code}")
-        
+
         if is_streaming:
             return handle_streaming_response(response)
         else:
             # For REST clients, unwrap JSON-RPC response
-            return handle_buffered_response_for_rest(response)
-            
+            return inject_context_id_in_response(
+                handle_buffered_response_for_rest(response), session_id
+            )
+
     except requests.Timeout:
         raise GatewayTimeoutError(
             STREAM_IDLE_TIMEOUT if is_streaming else 'BACKEND_TIMEOUT',
@@ -573,7 +576,6 @@ def normalize_jsonrpc_method(method: str) -> str:
         'SendStreamingMessage': 'message/stream',
         'GetTask': 'tasks/get',
         'CancelTask': 'tasks/cancel',
-        'TaskResubscribe': 'tasks/resubscribe',
     }
     return method_map.get(method, method)
 
@@ -777,8 +779,7 @@ def is_streaming_operation(operation: str) -> bool:
         True if streaming operation
     """
     # A2A streaming operations
-    return (operation.startswith('message:stream') or '/message:stream' in operation
-            or operation.startswith('tasks:resubscribe') or '/tasks:resubscribe' in operation)
+    return operation.startswith('message:stream') or '/message:stream' in operation
 
 
 def transform_a2a_to_bedrock_format(data: Any) -> Any:
@@ -822,13 +823,34 @@ def extract_context_id(params: Any) -> str:
     """Extract contextId from A2A params for session routing.
 
     Uses contextId if present (A2A protocol field for session continuity),
-    otherwise generates a new UUID.
+    otherwise generates a new UUID. AgentCore requires session IDs >= 33 chars,
+    so short values are hashed to a stable 36-char hex string.
     """
     if isinstance(params, dict):
         context_id = params.get('contextId') or params.get('message', {}).get('contextId')
         if context_id:
-            return context_id
+            if len(context_id) >= 33:
+                return context_id
+            import hashlib
+            return hashlib.sha256(context_id.encode()).hexdigest()[:36]
     return str(uuid4())
+
+
+def inject_context_id_in_response(api_response: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    """Ensure the response body carries contextId so clients can use it for follow-up task ops."""
+    try:
+        body = json.loads(api_response.get('body', '{}'))
+        if isinstance(body, dict):
+            # JSON-RPC response: inject into result
+            if 'result' in body and isinstance(body['result'], dict):
+                body['result'].setdefault('contextId', session_id)
+            else:
+                # REST-unwrapped response (result is the top-level object)
+                body.setdefault('contextId', session_id)
+            api_response['body'] = json.dumps(body)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return api_response
 
 
 def handle_buffered_response(response: requests.Response) -> Dict[str, Any]:

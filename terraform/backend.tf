@@ -1,10 +1,12 @@
 terraform {
-  backend "s3" {
-    bucket  = "a2a-gw-dev-state-bkt"
-    key     = "a2a-gateway/terraform.tfstate"
-    region  = "us-east-1"
-    encrypt = true
-  }
+  # Uncomment and configure the S3 backend for remote state storage:
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "a2a-gateway/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   # dynamodb_table = "terraform-state-lock"  # Optional: only needed for team collaboration
+  #   encrypt        = true
+  # }
 
   required_version = ">= 1.5.0"
 

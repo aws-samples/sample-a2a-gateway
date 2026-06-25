@@ -139,7 +139,7 @@ def extract_user_context(request: Request) -> UserContext:
 
 def is_streaming_operation(operation: str) -> bool:
     """Check if operation requires streaming response."""
-    return 'message:stream' in operation or 'tasks:resubscribe' in operation
+    return 'message:stream' in operation
 
 
 def check_rate_limit(user_context: UserContext, agent_id: str) -> None:
@@ -216,13 +216,17 @@ def extract_context_id(params: Any) -> str:
     """Extract contextId from A2A params for session routing.
 
     Uses contextId if present (A2A protocol field for session continuity),
-    otherwise generates a new UUID.
+    otherwise generates a new UUID. AgentCore requires session IDs >= 33 chars,
+    so short values are hashed to a stable 36-char hex string.
     """
     from uuid import uuid4
     if isinstance(params, dict):
         context_id = params.get('contextId') or params.get('message', {}).get('contextId')
         if context_id:
-            return context_id
+            if len(context_id) >= 33:
+                return context_id
+            import hashlib
+            return hashlib.sha256(context_id.encode()).hexdigest()[:36]
     return str(uuid4())
 
 
@@ -372,7 +376,7 @@ async def proxy_jsonrpc_request(
     
     backend_url = agent['backendUrl']
     method = jsonrpc_request.get('method', '')
-    is_streaming = method in ('SendStreamingMessage', 'message/stream', 'TaskResubscribe', 'tasks/resubscribe')
+    is_streaming = method in ('SendStreamingMessage', 'message/stream')
     
     # Transform params
     params = jsonrpc_request.get('params', {})
@@ -384,8 +388,6 @@ async def proxy_jsonrpc_request(
         'SendStreamingMessage': 'message/stream',
         'GetTask': 'tasks/get',
         'CancelTask': 'tasks/cancel',
-        'TaskResubscribe': 'tasks/resubscribe',
-        'SubscribeToTask': 'tasks/resubscribe',
     }
     normalized_method = method_to_slash.get(method, method)
     
@@ -419,7 +421,7 @@ async def proxy_jsonrpc_request(
     if is_streaming:
         return await stream_bedrock_response(invoke_url, forward_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers, session_id)
 
 
 @app.api_route(
@@ -556,21 +558,29 @@ async def forward_to_bedrock(
     if is_streaming:
         return await stream_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers, session_id)
 
 
 async def buffered_bedrock_response(
     url: str,
     jsonrpc_request: dict,
-    headers: dict
+    headers: dict,
+    session_id: str = ""
 ) -> JSONResponse:
     """Make buffered request to Bedrock AgentCore."""
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             response = await client.post(url, json=jsonrpc_request, headers=headers)
-            
+
+            content = response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+            if session_id and isinstance(content, dict):
+                if 'result' in content and isinstance(content['result'], dict):
+                    content['result'].setdefault('contextId', session_id)
+                else:
+                    content.setdefault('contextId', session_id)
+
             return JSONResponse(
-                content=response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text,
+                content=content,
                 status_code=response.status_code,
                 headers={
                     'Access-Control-Allow-Origin': '*',
