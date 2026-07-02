@@ -13,7 +13,8 @@ from proxy.handler import (
     lambda_handler, parse_path, extract_user_context,
     is_streaming_operation, build_backend_headers,
     detect_jsonrpc_request, normalize_jsonrpc_method,
-    format_error_response
+    format_error_response, REST_TO_JSONRPC_MAP,
+    extract_context_id, inject_context_id_in_response
 )
 from shared.errors import BadRequestError, NotFoundError, GatewayError
 
@@ -118,6 +119,9 @@ class TestStreamingDetection:
         """Should detect task operations as not streaming."""
         assert is_streaming_operation('tasks/task-123') is False
         assert is_streaming_operation('tasks') is False
+        assert is_streaming_operation('tasks:get') is False
+        assert is_streaming_operation('tasks:cancel') is False
+
 
 
 class TestBackendHeaders:
@@ -565,15 +569,39 @@ class TestJsonRpcMethodNormalization:
         """Should normalize SendStreamingMessage to message/stream."""
         assert normalize_jsonrpc_method('SendStreamingMessage') == 'message/stream'
     
+    def test_normalize_get_task(self):
+        """Should normalize GetTask to tasks/get."""
+        assert normalize_jsonrpc_method('GetTask') == 'tasks/get'
+
+    def test_normalize_cancel_task(self):
+        """Should normalize CancelTask to tasks/cancel."""
+        assert normalize_jsonrpc_method('CancelTask') == 'tasks/cancel'
+
     def test_passthrough_already_normalized(self):
         """Should pass through already normalized methods."""
         assert normalize_jsonrpc_method('message/send') == 'message/send'
         assert normalize_jsonrpc_method('message/stream') == 'message/stream'
+        assert normalize_jsonrpc_method('tasks/get') == 'tasks/get'
+        assert normalize_jsonrpc_method('tasks/cancel') == 'tasks/cancel'
+
+
+class TestRestToJsonRpcMap:
+    """Test REST operation to JSON-RPC method mapping."""
+
+    def test_message_operations(self):
+        """Should map message operations."""
+        assert REST_TO_JSONRPC_MAP['message:send'] == 'message/send'
+        assert REST_TO_JSONRPC_MAP['message:stream'] == 'message/stream'
+
+    def test_task_operations(self):
+        """Should map task operations."""
+        assert REST_TO_JSONRPC_MAP['tasks:get'] == 'tasks/get'
+        assert REST_TO_JSONRPC_MAP['tasks:cancel'] == 'tasks/cancel'
 
 
 class TestErrorFormatting:
     """Test error response formatting for different protocols."""
-    
+
     def test_rest_error_format(self):
         """Should format error for REST client."""
         error = GatewayError('TEST_ERROR', 'Test error message', 400, {'detail': 'test'})
@@ -603,9 +631,62 @@ class TestErrorFormatting:
     def test_jsonrpc_error_without_id(self):
         """Should handle JSON-RPC error without request id."""
         error = GatewayError('TEST_ERROR', 'Test error message', 500)
-        
+
         response = format_error_response(error, is_jsonrpc=True, jsonrpc_id=None)
-        
+
         body = json.loads(response['body'])
         assert body['id'] is None
+
+
+class TestExtractContextId:
+    """Test contextId extraction and normalization."""
+
+    def test_passthrough_long_context_id(self):
+        """Should pass through contextId that meets 33-char minimum."""
+        long_id = "a" * 36
+        result = extract_context_id({'contextId': long_id})
+        assert result == long_id
+
+    def test_hash_short_context_id(self):
+        """Should hash contextId shorter than 33 chars to a stable 36-char value."""
+        result = extract_context_id({'contextId': 'short-ctx'})
+        assert len(result) == 36
+        # Should be deterministic
+        assert result == extract_context_id({'contextId': 'short-ctx'})
+
+    def test_generates_uuid_when_missing(self):
+        """Should generate a UUID when no contextId present."""
+        result = extract_context_id({})
+        assert len(result) == 36
+
+    def test_extracts_from_nested_message(self):
+        """Should extract contextId from message.contextId."""
+        long_id = "b" * 36
+        result = extract_context_id({'message': {'contextId': long_id}})
+        assert result == long_id
+
+
+class TestInjectContextIdInResponse:
+    """Test contextId injection into responses."""
+
+    def test_injects_into_jsonrpc_result(self):
+        """Should inject contextId into result field of JSON-RPC response."""
+        resp = {'statusCode': 200, 'body': json.dumps({'jsonrpc': '2.0', 'result': {'task': 'data'}})}
+        result = inject_context_id_in_response(resp, 'session-123')
+        body = json.loads(result['body'])
+        assert body['result']['contextId'] == 'session-123'
+
+    def test_does_not_overwrite_existing_context_id(self):
+        """Should not overwrite contextId already present in result."""
+        resp = {'statusCode': 200, 'body': json.dumps({'result': {'contextId': 'original'}})}
+        result = inject_context_id_in_response(resp, 'session-123')
+        body = json.loads(result['body'])
+        assert body['result']['contextId'] == 'original'
+
+    def test_injects_into_rest_response(self):
+        """Should inject contextId into top-level REST response body."""
+        resp = {'statusCode': 200, 'body': json.dumps({'task': 'data'})}
+        result = inject_context_id_in_response(resp, 'session-456')
+        body = json.loads(result['body'])
+        assert body['contextId'] == 'session-456'
 

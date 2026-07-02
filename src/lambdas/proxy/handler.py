@@ -48,6 +48,8 @@ EXCLUDED_HEADERS = {
 REST_TO_JSONRPC_MAP = {
     'message:send': 'message/send',
     'message:stream': 'message/stream',
+    'tasks:get': 'tasks/get',
+    'tasks:cancel': 'tasks/cancel',
 }
 
 
@@ -413,16 +415,19 @@ def handle_jsonrpc_to_jsonrpc(
     
     # Build invoke URL
     invoke_url = get_backend_invoke_url(backend_url)
-    
-    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method: {normalized_method}")
-    
-    # Build headers
+
+    # Use contextId for session routing
+    session_id = extract_context_id(transformed_params)
+    if isinstance(transformed_params, dict) and not transformed_params.get('contextId'):
+        transformed_params['contextId'] = session_id
+        forward_request['params'] = transformed_params
+    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method={normalized_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     try:
         response = requests.post(
             invoke_url,
@@ -431,14 +436,16 @@ def handle_jsonrpc_to_jsonrpc(
             stream=is_streaming,
             timeout=900 if is_streaming else 300
         )
-        
+
         logger.info(f"Backend response status: {response.status_code}")
-        
+
         if is_streaming:
             return handle_streaming_response(response)
         else:
-            return handle_buffered_response(response)
-            
+            return inject_context_id_in_response(
+                handle_buffered_response(response), session_id
+            )
+
     except requests.Timeout:
         raise GatewayTimeoutError(
             STREAM_IDLE_TIMEOUT if is_streaming else 'BACKEND_TIMEOUT',
@@ -507,17 +514,19 @@ def handle_rest_to_jsonrpc(
     
     # Build invoke URL
     invoke_url = get_backend_invoke_url(backend_url)
-    
-    logger.info(f"Translating REST to JSON-RPC: {operation} -> {jsonrpc_method}")
-    logger.info(f"Forwarding to backend: {invoke_url}")
-    
-    # Build headers
+
+    # Use contextId for session routing
+    session_id = extract_context_id(transformed_body)
+    if isinstance(transformed_body, dict) and not transformed_body.get('contextId'):
+        transformed_body['contextId'] = session_id
+        jsonrpc_request['params'] = transformed_body
+    logger.info(f"Forwarding to backend: {invoke_url}, method={jsonrpc_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     try:
         response = requests.post(
             invoke_url,
@@ -526,15 +535,17 @@ def handle_rest_to_jsonrpc(
             stream=is_streaming,
             timeout=900 if is_streaming else 300
         )
-        
+
         logger.info(f"Backend response status: {response.status_code}")
-        
+
         if is_streaming:
             return handle_streaming_response(response)
         else:
             # For REST clients, unwrap JSON-RPC response
-            return handle_buffered_response_for_rest(response)
-            
+            return inject_context_id_in_response(
+                handle_buffered_response_for_rest(response), session_id
+            )
+
     except requests.Timeout:
         raise GatewayTimeoutError(
             STREAM_IDLE_TIMEOUT if is_streaming else 'BACKEND_TIMEOUT',
@@ -563,6 +574,8 @@ def normalize_jsonrpc_method(method: str) -> str:
     method_map = {
         'SendMessage': 'message/send',
         'SendStreamingMessage': 'message/stream',
+        'GetTask': 'tasks/get',
+        'CancelTask': 'tasks/cancel',
     }
     return method_map.get(method, method)
 
@@ -806,10 +819,44 @@ def transform_a2a_to_bedrock_format(data: Any) -> Any:
         return data
 
 
+def extract_context_id(params: Any) -> str:
+    """Extract contextId from A2A params for session routing.
+
+    Uses contextId if present (A2A protocol field for session continuity),
+    otherwise generates a new UUID. AgentCore requires session IDs >= 33 chars,
+    so short values are hashed to a stable 36-char hex string.
+    """
+    if isinstance(params, dict):
+        context_id = params.get('contextId') or params.get('message', {}).get('contextId')
+        if context_id:
+            if len(context_id) >= 33:
+                return context_id
+            import hashlib
+            return hashlib.sha256(context_id.encode()).hexdigest()[:36]
+    return str(uuid4())
+
+
+def inject_context_id_in_response(api_response: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    """Ensure the response body carries contextId so clients can use it for follow-up task ops."""
+    try:
+        body = json.loads(api_response.get('body', '{}'))
+        if isinstance(body, dict):
+            # JSON-RPC response: inject into result
+            if 'result' in body and isinstance(body['result'], dict):
+                body['result'].setdefault('contextId', session_id)
+            else:
+                # REST-unwrapped response (result is the top-level object)
+                body.setdefault('contextId', session_id)
+            api_response['body'] = json.dumps(body)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return api_response
+
+
 def handle_buffered_response(response: requests.Response) -> Dict[str, Any]:
     """
     Handle buffered response from backend.
-    
+
     Args:
         response: Requests response object
         

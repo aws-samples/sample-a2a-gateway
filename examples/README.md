@@ -6,12 +6,15 @@ This example deploys two AI agents to Amazon Bedrock AgentCore Runtime using the
 
 ### Agents
 
-| Agent | Description | Skill |
-|-------|-------------|-------|
-| **Weather Agent** | Answers weather-related questions using a custom weather tool | `weather` — returns mock weather data for any city |
-| **Calculator Agent** | Performs arithmetic operations | `calculator` — evaluates math expressions via SymPy |
+| Agent | Description | Skill | Mode |
+|-------|-------------|-------|------|
+| **Weather Agent** | Answers weather-related questions using a custom weather tool | `weather` — returns mock weather data for any city | Synchronous |
+| **Calculator Agent** | Performs arithmetic operations | `calculator` — evaluates math expressions via SymPy | Synchronous |
+| **Async Test Agent** | Demonstrates async task lifecycle (working → completed/canceled) | `general` — general Q&A | Asynchronous |
 
-Both agents use the [Strands Agents SDK](https://github.com/strands-agents/strands-agents-python) with `BedrockAgentCoreApp` and are deployed as ARM64 containers to AgentCore Runtime.
+The Weather and Calculator agents use the [Strands Agents SDK](https://github.com/strands-agents/strands-agents-python) with `BedrockAgentCoreApp` and are deployed as ARM64 containers to AgentCore Runtime.
+
+The Async Test Agent (`agent-async-code/`) uses the [a2a-sdk](https://pypi.org/project/a2a-sdk/) with `InMemoryTaskStore` and demonstrates the full async task lifecycle — `message/send` returns immediately with a `working` state, and the task completes in the background. Use `tasks:get` and `tasks:cancel` to interact with the task after submission.
 
 ### Terraform Modules
 
@@ -335,12 +338,16 @@ terraform destroy
 
 ```
 examples/
-├── agent-weather-code/          # Weather agent source
+├── agent-weather-code/          # Weather agent source (sync)
 │   ├── agent.py                 # Strands agent with weather tool
 │   ├── Dockerfile
 │   └── requirements.txt
-├── agent-calculator-code/       # Calculator agent source
+├── agent-calculator-code/       # Calculator agent source (sync)
 │   ├── agent.py                 # Strands agent with calculator tool
+│   ├── Dockerfile
+│   └── requirements.txt
+├── agent-async-code/            # Async agent source (task lifecycle)
+│   ├── agent.py                 # a2a-sdk with InMemoryTaskStore
 │   ├── Dockerfile
 │   └── requirements.txt
 └── terraform/

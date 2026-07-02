@@ -212,6 +212,24 @@ def transform_a2a_to_bedrock_format(data: Any) -> Any:
     return data
 
 
+def extract_context_id(params: Any) -> str:
+    """Extract contextId from A2A params for session routing.
+
+    Uses contextId if present (A2A protocol field for session continuity),
+    otherwise generates a new UUID. AgentCore requires session IDs >= 33 chars,
+    so short values are hashed to a stable 36-char hex string.
+    """
+    from uuid import uuid4
+    if isinstance(params, dict):
+        context_id = params.get('contextId') or params.get('message', {}).get('contextId')
+        if context_id:
+            if len(context_id) >= 33:
+                return context_id
+            import hashlib
+            return hashlib.sha256(context_id.encode()).hexdigest()[:36]
+    return str(uuid4())
+
+
 def build_backend_headers(
     client_headers: Dict[str, str],
     access_token: str,
@@ -364,12 +382,14 @@ async def proxy_jsonrpc_request(
     params = jsonrpc_request.get('params', {})
     transformed_params = transform_a2a_to_bedrock_format(params)
     
-    # Normalize method name
-    method_map = {
+    # Normalize method name to slash format for backends
+    method_to_slash = {
         'SendMessage': 'message/send',
         'SendStreamingMessage': 'message/stream',
+        'GetTask': 'tasks/get',
+        'CancelTask': 'tasks/cancel',
     }
-    normalized_method = method_map.get(method, method)
+    normalized_method = method_to_slash.get(method, method)
     
     # Build forwarded request
     from uuid import uuid4
@@ -385,20 +405,23 @@ async def proxy_jsonrpc_request(
         invoke_url = f"{backend_url.rstrip('/')}/invocations"
     else:
         invoke_url = backend_url.rstrip('/')
-    
-    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method: {normalized_method}")
-    
-    # Build headers
+
+    # Build headers — use contextId for session routing
+    session_id = extract_context_id(transformed_params)
+    if isinstance(transformed_params, dict) and not transformed_params.get('contextId'):
+        transformed_params['contextId'] = session_id
+        forward_request['params'] = transformed_params
+    logger.info(f"Forwarding JSON-RPC to backend: {invoke_url}, method={normalized_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     if is_streaming:
         return await stream_bedrock_response(invoke_url, forward_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, forward_request, backend_headers, session_id)
 
 
 @app.api_route(
@@ -492,7 +515,7 @@ async def forward_to_bedrock(
     """
     from uuid import uuid4
     
-    # Convert operation to JSON-RPC method
+    # Convert REST operation to JSON-RPC method (slash format)
     jsonrpc_method = operation.replace(':', '/')
     logger.info(f"Converting '{operation}' to JSON-RPC method '{jsonrpc_method}'")
     
@@ -519,34 +542,45 @@ async def forward_to_bedrock(
         invoke_url = f"{backend_url.rstrip('/')}/invocations"
     else:
         invoke_url = backend_url.rstrip('/')
-    
-    logger.info(f"Forwarding to Bedrock AgentCore: {invoke_url}")
-    
-    # Build headers
+
+    # Build headers — use contextId for session routing
+    session_id = extract_context_id(request_body)
+    if isinstance(request_body, dict) and not request_body.get('contextId'):
+        request_body['contextId'] = session_id
+        jsonrpc_request['params'] = request_body
+    logger.info(f"Forwarding to Bedrock AgentCore: {invoke_url}, method={jsonrpc_method}, sessionId={session_id}")
     backend_headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': str(uuid4())
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': session_id
     }
-    
+
     if is_streaming:
         return await stream_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
     else:
-        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers)
+        return await buffered_bedrock_response(invoke_url, jsonrpc_request, backend_headers, session_id)
 
 
 async def buffered_bedrock_response(
     url: str,
     jsonrpc_request: dict,
-    headers: dict
+    headers: dict,
+    session_id: str = ""
 ) -> JSONResponse:
     """Make buffered request to Bedrock AgentCore."""
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             response = await client.post(url, json=jsonrpc_request, headers=headers)
-            
+
+            content = response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+            if session_id and isinstance(content, dict):
+                if 'result' in content and isinstance(content['result'], dict):
+                    content['result'].setdefault('contextId', session_id)
+                else:
+                    content.setdefault('contextId', session_id)
+
             return JSONResponse(
-                content=response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text,
+                content=content,
                 status_code=response.status_code,
                 headers={
                     'Access-Control-Allow-Origin': '*',

@@ -58,6 +58,7 @@ resource "null_resource" "build_proxy_container" {
       # Build container
       cd ${path.module}/../src/lambdas
       docker build \
+        --no-cache \
         -t ${module.ecr.proxy_repository_url}:latest \
         -f proxy_container/Dockerfile \
         --platform linux/amd64 \
@@ -66,6 +67,12 @@ resource "null_resource" "build_proxy_container" {
       
       # Push to ECR
       docker push ${module.ecr.proxy_repository_url}:latest
+
+      # Force Lambda to pull the new image (`:latest` tag alone won't trigger an update)
+      aws lambda update-function-code \
+        --function-name ${var.project_name}-${var.environment}-proxy \
+        --image-uri ${module.ecr.proxy_repository_url}:latest \
+        --region ${var.aws_region} > /dev/null 2>&1 || true
     EOT
   }
 
